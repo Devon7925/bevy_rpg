@@ -6,71 +6,88 @@ by Devon Rutledge
 
 ## Game Overview
 
-2.1. Game Concept
-2.2. Target Audience
-2.3. Genre(s)
-2.4. Game Flow Summary – How does the player move through the game?  Include both the
-interface and the game itself.
-2.5. Look and Feel – What is the basic look and feel of the game?  What is the visual style?
+RPG Game is an AI driven top down RPG game where the player can live and interact freely in a 16th century farming village. The target audience is anyone who wishes to lose themselves in a virtual world and its characters. The game uses a 2D top down perspective and pixel art.
+
+As the player moves through the game they will gain hunger, which they must use food to fix or they will die. They can either either need to farm for food, or convince an NPC to give it to them through manipulation, begging, trading, or work.
 
 ## Gameplay
 
-3.1. Objectives – What are the objectives of the game?
-3.2. Game Progression
-3.3. Play Flow – How does the game flow for the game player
-3.4. Mission/challenge Structure
-3.5. Puzzle Structure
+The only built in objective of the game is to not starve. However the player may set alternative objectives for themselves such as helping NPCs with whatever problems they have.
+
+### Getting food
+
+The player will have to get food in order to not starve. In order to get food they can either farm it or get it from NPCS.
+
+If they farm it, they NPCs may spot them and react. For example if you farm on another farmer's property they will may to kick you out, however you could make an agreement with the farmer to keep a portion of the food, trade the food for money, or other emergent possibilities.
+
+If they get it from an NPC, they have many options some of which will be emergent. Here are some ideas:
+* Manipulate
+* Trade
+* Beg
+* Ask for it after doing work for them
+* Ask for it as a loan
+* They may also just decide to give it to you as thanks for doing something for them like repairing their relationship with ther friend
+
+### Other Tasks
+
+RPG Game is meant to be an alive world full of real conflicts that change and adapt. Some conflicts will be built into the original character states. This allows the player to have optional other problems to solve other than just hunger. For example a father might be in an argument with his son which you could resolve either by convincing one of them is right, eliminating the situation surrounding the situation surrounding the argument, or giving them a bigger problem to deal with.  
 
 ## Mechanics (Key Section)
 
-4.1. Rules – What are the rules to the game, both implicit and explicit.
-4.2. Model of the game universe.  Think of it as a simulation of a world, how do all the pieces
-interact?
-4.3. Physics – How does the physical universe work?
-4.4. Economy – What is the economy of the game? How does it work?
-4.5. Character movement in the game
-4.6. Objects – how to pick them up and move them
-4.7. Actions, including whatever switches and buttons are used, interacting with objects, and
-what means of communication are used
-4.8. Combat – If there is combat or even conflict, how is this specifically modeled?
-4.9. Screen Flow -- How each screen is related to every other and a description of the purpose
-of each screen
-4.10. Game Options - What are the options and how do they affect game play?
-4.11. Replaying and saving
+The Game will run on a state system. The state contains the following:
+* The grid of tiles and their types
+* For each NPC and Player
+  * Position
+  * Direction
+  * Hunger level
+  * Last thing they said
+  * Time since they last spoke
+  * Inventory
+* For each NPC
+  * AI Task
+  * Short term memory
+  * Long term memory
+The state will be updated at a fixed time step with the future state being a result of the previous state and actions. Actions are done by both NPCs and Players and are made of their movement, interaction, and their speech.
 
-## Story and Narrative
+Movement can be nothing, moving forward, or a change in direction.
+Speech can be nothing or a piece of text representing what they are saying.
 
-5.1. Back story
-5.2. Plot elements
-5.3. Game story progression
+Tiles can have a variety of types with internal states:
+* Grass
+* Building
+* Seed(time till grow)
+* Crop
+* Dirt
+
+The player's action is determined entirely by their control.
+
+The NPC's movement and interaction is determined by their AI Task. Their speech is taken by combining their short and long term memory and feeding it to a LLM to get what they say. The LLM can also affect their AI task. They won't try to speak if they recently spoke. Short term memory is made of recently spoken things and actions they see around them. Long term memory is a occationally summary of what has happened in the past.
 
 ## Game World
 
-6.1. General look and feel of world
-6.2. Areas
-6.2.1. General description and physical characteristics
-6.2.2. How relate to the rest of the world
-6.2.2.2. Connections to other areas
+The world is a small village in 16th century medival europe. The player cannot leave the village and the village is disconnected from the outside world.
 
 ## Characters
 
-7.1. For each character
-7.1.1. Back story
-7.1.2. Personality
-7.1.3. Appearance
-7.1.4. Abilities
-7.1.5. Relevance to the story
-7.1.6. Relationship to other characters  
-7.2. Artificial Intelligence Use in Opponent  and Enemy
-7.3. Non-combat and Friendly Characters
+Characters will be built by putting their personality and history into their initial long term context.
+
+### Examples
+
+You are Theo. A 16th century Farmer living in a small village in medival europe. You live with your wife Jessica and son Jeff on your own small patch of land. You know your land is small but it has been owned by centuries by your family. Jeff wants to start working on your neighbor Bill's land because it is much bigger, but you want your family to continue farming your ancestral land. You also know you are getting old and tired and will soon need help, especially if you have to support Jessica without help.
+
+You are Jeff. A 16th century Farmer living in a small village in medival europe. You currently live with your parents Theo and Jessica on their small farm. However you know your land is small and will have trouble feeding all three of you so you'd like to move to your neighbor Bill's land in order to stop burdening your family. Theo objects to this due to heritage reasons but you think eating is more important than tradition.
+
+You are Jessica. The wife of a 16th century Farmer living in a small village in medival europe. You live with your husband Theo and son Jeff on a small farm. You know Theo is getting old and will soon need help running the farm but your son Jeff is planning to move to help your neighbor Bill's larger farm at some point. You've tried bring up working the farm yourself but neither Theo nor Jeff seems to listen to you. You otherwise do knitting and housework with most of yor day.
 
 ## Interface
 
-9.1. Visual System
-9.1.1. HUD
-9.1.2. Menus
-9.1.3. Camera model
-9.2. Control System – How does the game player control the game?   What are the specific
-commands?
-9.3. Audio, music, sound effects
-9.4. Game Art – intended style
+The Game is top down pixel art, with a simple pixel art HUD and GUI. The camera will follow the player, keeping them in the middle third of the screen.
+
+The game will have sounds for farming, walking and talking.
+
+### Controls
+| Keys | Effect |
+|------|--------|
+| WASD / Arrows | Movement |
+| Space | Interact |
+| Enter | Enter chat box / Submit text |
