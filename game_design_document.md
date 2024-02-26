@@ -21,6 +21,7 @@ The player will have to get food in order to not starve. In order to get food th
 If they farm it, they NPCs may spot them and react. For example if you farm on another farmer's property they will may to kick you out, however you could make an agreement with the farmer to keep a portion of the food, trade the food for money, or other emergent possibilities.
 
 If they get it from an NPC, they have many options some of which will be emergent. Here are some ideas:
+
 * Manipulate
 * Trade
 * Beg
@@ -35,6 +36,7 @@ RPG Game is meant to be an alive world full of real conflicts that change and ad
 ## Mechanics (Key Section)
 
 The Game will run on a state system. The state contains the following:
+
 * The grid of tiles and their types
 * For each NPC and Player
   * Position
@@ -53,6 +55,7 @@ Movement can be nothing, moving forward, or a change in direction.
 Speech can be nothing or a piece of text representing what they are saying.
 
 Tiles can have a variety of types with internal states:
+
 * Grass
 * Building
 * Seed(time till grow)
@@ -86,6 +89,7 @@ The Game is top down pixel art, with a simple pixel art HUD and GUI. The camera 
 The game will have sounds for farming, walking and talking.
 
 ### Controls
+
 | Keys | Effect |
 |------|--------|
 | WASD / Arrows | Movement |
