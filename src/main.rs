@@ -12,13 +12,10 @@ use bevy::{
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use serde::{Deserialize, Serialize};
 
-// These constants are defined in `Transform` units.
-// Using the default 2D camera they correspond 1:1 with screen pixels.
-const PADDLE_SIZE: Vec3 = Vec3::new(20.0, 20.0, 0.0);
+const CHARACTER_SCALE: Vec3 = Vec3::new(0.2, 0.2, 0.0);
 const PADDLE_SPEED: f32 = 500.0;
 
 const BACKGROUND_COLOR: Color = Color::rgb(0.9, 0.9, 0.9);
-const PADDLE_COLOR: Color = Color::rgb(0.3, 0.3, 0.7);
 
 fn main() {
     App::new()
@@ -51,6 +48,15 @@ struct Character {
     speech: Option<String>,
 }
 
+impl Default for Character {
+    fn default() -> Self {
+        Character {
+            name: "".to_string(),
+            speech: None,
+        }
+    }
+}
+
 #[derive(Component)]
 struct Player {
     text_box: String,
@@ -61,6 +67,16 @@ struct NPC {
     backstory: String,
     chat_cooldown: f32,
     chat_history: Vec<(String, String)>,
+}
+
+impl Default for NPC {
+    fn default() -> Self {
+        NPC {
+            backstory: "".to_string(),
+            chat_cooldown: 20.0,
+            chat_history: vec![],
+        }
+    }
 }
 
 #[derive(Component, Deref, DerefMut)]
@@ -90,7 +106,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             StartPos(Vec2::new(0.0, 0.0)),
             Character {
                 name: "James".to_string(),
-                speech: None,
+                ..Default::default()
             },
             Player {
                 text_box: "".to_string(),
@@ -104,12 +120,11 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         StartPos(Vec2::new(-100.0, 80.0)),
         Character {
             name: "Theo".to_string(),
-            speech: None,
+            ..Default::default()
         },
         NPC {
             backstory: "You are Theo. A stern 16th century Farmer living in a small village in medieval europe. You live with your wife Jessica and son Jeff on your own small patch of land. You know your land is small but it has been owned by centuries by your family. Jeff wants to start working on your neighbor Bill's land because it is much bigger, but you want your family to continue farming your ancestral land. You also know you are getting old and tired and will soon need Jeff's help, especially if you have to support Jessica without help. You speak in short dialog.".to_string(),
-            chat_cooldown: 20.0,
-            chat_history: vec![],
+            ..Default::default()
         },
         Collider,
     )).add(fill_character);
@@ -118,12 +133,12 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         StartPos(Vec2::new(100.0, 50.0)),
         Character {
             name: "Jeff".to_string(),
-            speech: None,
+            ..Default::default()
         },
         NPC {
             backstory: "You are Jeff. A 16th century Farmer living in a small village in medival europe. You currently live with your parents Theo and Jessica on their small farm. However you know your land is small and will have trouble feeding all three of you so you'd like to move to your neighbor Bill's land in order to stop burdening your family. You've brought this up before, but Theo object due to heritage reasons, whereas you think eating is more important than tradition. You speak in short dialog.".to_string(),
             chat_cooldown: 40.0,
-            chat_history: vec![],
+            ..Default::default()
         },
         Collider,
     )).add(fill_character);
@@ -134,14 +149,16 @@ fn fill_character(mut entity: EntityWorldMut<'_>) {
         .get::<StartPos>()
         .unwrap_or(&StartPos(Vec2::new(0.0, 0.0)))
         .0;
+    let char_name = entity.get::<Character>().unwrap().name.clone();
+    let texture = entity.world_scope(|world| {
+        let asset_server = world.get_resource::<AssetServer>().unwrap();
+        asset_server.load(format!("textures/characters/{}.png", char_name))
+    });
     entity.insert(SpriteBundle {
+        texture,
         transform: Transform {
             translation: start_pos.extend(0.0),
-            scale: PADDLE_SIZE,
-            ..default()
-        },
-        sprite: Sprite {
-            color: PADDLE_COLOR,
+            scale: CHARACTER_SCALE,
             ..default()
         },
         ..default()
