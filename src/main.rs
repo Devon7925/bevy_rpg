@@ -7,7 +7,8 @@ use bevy::{
     sprite::{
         collide_aabb::{collide, Collision},
         MaterialMesh2dBundle,
-    }, text::Text2dBounds,
+    },
+    text::Text2dBounds,
 };
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use serde::{Deserialize, Serialize};
@@ -32,8 +33,9 @@ fn main() {
                 update_chat_history,
                 update_speech_box,
                 apply_velocity,
-                move_paddle,
+                move_player,
                 update_npcs,
+                camera_follow_player,
             )
                 // `chain`ing systems together runs them in order
                 .chain(),
@@ -98,6 +100,18 @@ struct CollisionSound(Handle<AudioSource>);
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     // Camera
     commands.spawn(Camera2dBundle::default());
+
+    // Background
+    let background_scale = 2.0;
+    commands.spawn(SpriteBundle {
+        texture: asset_server.load("textures/background.png"),
+        transform: Transform {
+            translation: Vec3::new(-1500.0, 1500.0, 0.0),
+            scale: Vec3::new(background_scale, background_scale, 0.0),
+            ..default()
+        },
+        ..Default::default()
+    });
 
     // Player
 
@@ -192,7 +206,7 @@ fn fill_character(mut entity: EntityWorldMut<'_>) {
     entity.add_child(text_child_id);
 }
 
-fn move_paddle(
+fn move_player(
     keyboard_input: Res<Input<KeyCode>>,
     mut query: Query<&mut Transform, With<Player>>,
     time: Res<Time>,
@@ -316,7 +330,12 @@ fn update_npcs(time: Res<Time>, mut npc_query: Query<(&mut NPC, &mut Character)>
                 let is_chatter_assistant = chatter == &character.name;
                 if prev_is_chatter_assistant != is_chatter_assistant && current_content.len() > 0 {
                     messages.push(OpenAIMessage {
-                        role: if prev_is_chatter_assistant { "assistant" } else { "user" }.to_string(),
+                        role: if prev_is_chatter_assistant {
+                            "assistant"
+                        } else {
+                            "user"
+                        }
+                        .to_string(),
                         content: current_content.trim().to_string(),
                         name: None,
                     });
@@ -327,7 +346,12 @@ fn update_npcs(time: Res<Time>, mut npc_query: Query<(&mut NPC, &mut Character)>
             }
             if current_content.len() > 0 {
                 messages.push(OpenAIMessage {
-                    role: if prev_is_chatter_assistant { "assistant" } else { "user" }.to_string(),
+                    role: if prev_is_chatter_assistant {
+                        "assistant"
+                    } else {
+                        "user"
+                    }
+                    .to_string(),
                     content: current_content.trim().to_string(),
                     name: None,
                 });
@@ -362,10 +386,11 @@ fn update_npcs(time: Res<Time>, mut npc_query: Query<(&mut NPC, &mut Character)>
                     panic!("Error: {:?}", e);
                 }
             };
-            let mut character_response = res.choices[0].message.content.clone();
+            let character_response = res.choices[0].message.content.clone();
             println!("{}'s Response: {}", character.name, character_response);
-            character_response = character_response.strip_prefix(format!("{}: ", character.name).as_str()).unwrap().to_string();
-            character.speech = Some(character_response);
+            character.speech = character_response
+                .strip_prefix(format!("{}: ", character.name).as_str())
+                .map(|s| s.to_string());
         }
     }
 }
@@ -382,5 +407,24 @@ fn ui_example_system(
                 player.text_box = "".to_string();
             }
         });
+    }
+}
+
+fn camera_follow_player(
+    player_query: Query<&Transform, With<Player>>,
+    mut camera_query: Query<&mut Transform, (With<Camera2d>, Without<Player>)>,
+) {
+    for player_transform in player_query.iter() {
+        for mut camera_transform in &mut camera_query.iter_mut() {
+            if camera_transform
+                .translation
+                .distance(player_transform.translation)
+                > 100.0
+            {
+                camera_transform.translation = player_transform.translation
+                    + (camera_transform.translation - player_transform.translation).normalize()
+                        * 100.0;
+            }
+        }
     }
 }
