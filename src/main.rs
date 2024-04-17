@@ -34,8 +34,10 @@ fn main() {
                 update_speech_box,
                 apply_velocity,
                 move_player,
+                harvest_plant,
                 update_npcs,
                 camera_follow_player,
+                update_plants,
             )
                 // `chain`ing systems together runs them in order
                 .chain(),
@@ -44,10 +46,16 @@ fn main() {
         .run();
 }
 
+enum Item {
+    Plant,
+    Meat,
+}
+
 #[derive(Component)]
 struct Character {
     name: String,
     speech: Option<String>,
+    items: Vec<(Item, u32)>,
 }
 
 impl Default for Character {
@@ -55,6 +63,7 @@ impl Default for Character {
         Character {
             name: "".to_string(),
             speech: None,
+            items: vec![],
         }
     }
 }
@@ -87,6 +96,11 @@ struct StartPos(Vec2);
 #[derive(Component, Deref, DerefMut)]
 struct Velocity(Vec2);
 
+#[derive(Component, Deref, DerefMut)]
+struct Plant {
+    growth: f32,
+}
+
 #[derive(Component)]
 struct Collider;
 
@@ -113,8 +127,21 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         ..Default::default()
     });
 
-    // Player
+    // Plants
+    commands.spawn((
+        Plant { growth: 0.0 },
+        SpriteBundle {
+            texture: asset_server.load("textures/plants/stage1.png"),
+            transform: Transform {
+                translation: Vec3::new(100.0, 200.0, 0.0),
+                scale: Vec3::new(0.3, 0.3, 0.0),
+                ..default()
+            },
+            ..Default::default()
+        },
+    ));
 
+    // Player
     commands
         .spawn((
             StartPos(Vec2::new(0.0, 0.0)),
@@ -240,6 +267,23 @@ fn move_player(
 
     paddle_transform.translation.x = new_paddle_position.x;
     paddle_transform.translation.y = new_paddle_position.y;
+}
+
+fn harvest_plant(
+    keyboard_input: Res<Input<KeyCode>>,
+    mut query: Query<(&Transform, &mut Character), (With<Player>, Without<Plant>)>,
+    mut plant_query: Query<(&Transform, &mut Plant)>,
+) {
+    if keyboard_input.just_pressed(KeyCode::Space) {
+        for (player_transform, mut player) in &mut query {
+            for (plant_transform, mut plant) in &mut plant_query {
+                if plant_transform.translation.distance(player_transform.translation) < 50.0 {
+                    player.items.push((Item::Plant, 1));
+                    plant.growth = 0.0;
+                }
+            }
+        }
+    }
 }
 
 fn apply_velocity(mut query: Query<(&mut Transform, &Velocity)>, time: Res<Time>) {
@@ -425,6 +469,25 @@ fn camera_follow_player(
                     + (camera_transform.translation - player_transform.translation).normalize()
                         * 100.0;
             }
+        }
+    }
+}
+
+fn update_plants(
+    mut query: Query<(&mut Plant, &mut Handle<Image>)>,
+    asset_server: Res<AssetServer>,
+) {
+    for (mut plant, mut texture) in &mut query {
+        plant.growth += 0.1;
+        if plant.growth > 4.0 {
+            *texture = asset_server.load::<Image>("textures/plants/stage3.png");
+        } else if plant.growth > 2.0 {
+            *texture = asset_server.load::<Image>("textures/plants/stage2.png");
+        } else {
+            *texture = asset_server.load::<Image>("textures/plants/stage1.png");
+        }
+        if plant.growth > 10.0 {
+            plant.growth = 10.0;
         }
     }
 }
