@@ -1,6 +1,6 @@
 //! A simplified implementation of the classic game "Breakout".
 
-use std::{collections::HashMap, env};
+use std::{collections::HashMap, env, fmt::{self, Formatter}};
 
 use bevy::{
     prelude::*,
@@ -38,6 +38,8 @@ fn main() {
                 update_npcs,
                 camera_follow_player,
                 update_plants,
+                inventory_update,
+                update_saturation,
             )
                 // `chain`ing systems together runs them in order
                 .chain(),
@@ -46,16 +48,26 @@ fn main() {
         .run();
 }
 
+#[derive(Eq, PartialEq, Hash, Clone)]
 enum Item {
     Plant,
     Meat,
 }
 
+impl fmt::Display for Item {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Item::Plant => write!(f, "Plant"),
+            Item::Meat => write!(f, "Meat"),
+        }
+    }
+}
 #[derive(Component)]
 struct Character {
     name: String,
     speech: Option<String>,
     items: Vec<(Item, u32)>,
+    saturation: f32,
 }
 
 impl Default for Character {
@@ -64,6 +76,7 @@ impl Default for Character {
             name: "".to_string(),
             speech: None,
             items: vec![],
+            saturation: 100.0,
         }
     }
 }
@@ -128,18 +141,39 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     });
 
     // Plants
-    commands.spawn((
-        Plant { growth: 0.0 },
-        SpriteBundle {
-            texture: asset_server.load("textures/plants/stage1.png"),
-            transform: Transform {
-                translation: Vec3::new(100.0, 200.0, 0.0),
-                scale: Vec3::new(0.3, 0.3, 0.0),
-                ..default()
-            },
-            ..Default::default()
-        },
-    ));
+    for x in 0..=14 {
+        for y in 0..=10 {
+            commands.spawn((
+                Plant { growth: 0.0 },
+                SpriteBundle {
+                    texture: asset_server.load("textures/plants/stage1.png"),
+                    transform: Transform {
+                        translation: Vec3::new(-700.0 + 60.0 * (x as f32), 0.0 + 60.0 * (y as f32), 0.0),
+                        scale: Vec3::new(0.3, 0.3, 0.0),
+                        ..default()
+                    },
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+
+    for x in 0..=23 {
+        for y in 0..=23 {
+            commands.spawn((
+                Plant { growth: 0.0 },
+                SpriteBundle {
+                    texture: asset_server.load("textures/plants/stage1.png"),
+                    transform: Transform {
+                        translation: Vec3::new(-2400.0 + 60.0 * (x as f32), 0.0 + 60.0 * (y as f32), 0.0),
+                        scale: Vec3::new(0.3, 0.3, 0.0),
+                        ..default()
+                    },
+                    ..Default::default()
+                },
+            ));
+        }
+    }
 
     // Player
     commands
@@ -445,6 +479,11 @@ fn ui_example_system(
 ) {
     for (mut player, mut character) in &mut players {
         egui::Window::new("Chat box").show(contexts.ctx_mut(), |ui| {
+            ui.add(egui::ProgressBar::new(character.saturation / 100.0).text("Saturation"));
+            ui.label("Inventory");
+            for (item, count) in &character.items {
+                ui.label(format!("{}: {}", item, count));
+            }
             ui.text_edit_singleline(&mut player.text_box);
             if ui.button("Submit").clicked() {
                 character.speech = Some(player.text_box.clone());
@@ -478,7 +517,7 @@ fn update_plants(
     asset_server: Res<AssetServer>,
 ) {
     for (mut plant, mut texture) in &mut query {
-        plant.growth += 0.1;
+        plant.growth += 0.02;
         if plant.growth > 4.0 {
             *texture = asset_server.load::<Image>("textures/plants/stage3.png");
         } else if plant.growth > 2.0 {
@@ -488,6 +527,53 @@ fn update_plants(
         }
         if plant.growth > 10.0 {
             plant.growth = 10.0;
+        }
+    }
+}
+
+// stack items and auto eat if saturation is low
+fn inventory_update(mut query: Query<&mut Character>) {
+    for mut character in &mut query.iter_mut() {
+        let mut new_items = HashMap::new();
+        for (item, count) in character.items.clone() {
+            let new_count = new_items.entry(item).or_insert(0);
+            *new_count += count;
+        }
+        character.items.clear();
+        for (item, count) in new_items {
+            character.items.push((item, count));
+        }
+        
+        if character.saturation < 30.0 {
+            let mut new_saturation = character.saturation;
+            for (item, count) in character.items.iter_mut() {
+                let provided_saturation = match item {
+                    Item::Plant => 10.0,
+                    Item::Meat => 20.0,
+                };
+                if provided_saturation > 0.0 {
+                    while *count > 0 && new_saturation < 60.0 {
+                        new_saturation += provided_saturation;
+                        *count -= 1;
+                    }
+                }
+            }
+            character.saturation = new_saturation;
+        }
+        // remove empty items
+        character.items.retain(|(_, count)| *count > 0);
+    }
+}
+
+fn update_saturation(
+    mut commands: Commands,
+    mut query: Query<(Entity, &mut Character)>,
+    time: Res<Time>
+) {
+    for (entity, mut character) in &mut query.iter_mut() {
+        character.saturation -= time.delta_seconds();
+        if character.saturation < 0.0 {
+            commands.entity(entity).despawn();
         }
     }
 }
