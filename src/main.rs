@@ -1,14 +1,13 @@
 //! A simplified implementation of the classic game "Breakout".
 
-use std::{collections::HashMap, env, fmt::{self, Formatter}};
+use std::{
+    collections::HashMap,
+    env,
+    fmt::{self, Formatter},
+};
 
 use bevy::{
-    prelude::*,
-    sprite::{
-        collide_aabb::{collide, Collision},
-        MaterialMesh2dBundle,
-    },
-    text::Text2dBounds,
+    a11y::accesskit::TextAlign, prelude::*, text::Text2dBounds
 };
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use serde::{Deserialize, Serialize};
@@ -23,7 +22,6 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(EguiPlugin)
         .insert_resource(ClearColor(BACKGROUND_COLOR))
-        .add_event::<CollisionEvent>()
         .add_systems(Startup, setup)
         // Add our gameplay simulation systems to the fixed timestep schedule
         // which runs at 64 Hz by default
@@ -44,7 +42,7 @@ fn main() {
                 // `chain`ing systems together runs them in order
                 .chain(),
         )
-        .add_systems(Update, (ui_example_system, bevy::window::close_on_esc))
+        .add_systems(Update, (ui_system, bevy::window::close_on_esc))
         .run();
 }
 
@@ -114,15 +112,6 @@ struct Plant {
     growth: f32,
 }
 
-#[derive(Component)]
-struct Collider;
-
-#[derive(Event, Default)]
-struct CollisionEvent;
-
-#[derive(Resource)]
-struct CollisionSound(Handle<AudioSource>);
-
 // Add the game's entities to our world
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     // Camera
@@ -148,7 +137,11 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                 SpriteBundle {
                     texture: asset_server.load("textures/plants/stage1.png"),
                     transform: Transform {
-                        translation: Vec3::new(-700.0 + 60.0 * (x as f32), 0.0 + 60.0 * (y as f32), 0.0),
+                        translation: Vec3::new(
+                            -700.0 + 60.0 * (x as f32),
+                            0.0 + 60.0 * (y as f32),
+                            0.0,
+                        ),
                         scale: Vec3::new(0.3, 0.3, 0.0),
                         ..default()
                     },
@@ -165,7 +158,11 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                 SpriteBundle {
                     texture: asset_server.load("textures/plants/stage1.png"),
                     transform: Transform {
-                        translation: Vec3::new(-2400.0 + 60.0 * (x as f32), 0.0 + 60.0 * (y as f32), 0.0),
+                        translation: Vec3::new(
+                            -2400.0 + 60.0 * (x as f32),
+                            0.0 + 60.0 * (y as f32),
+                            0.0,
+                        ),
                         scale: Vec3::new(0.3, 0.3, 0.0),
                         ..default()
                     },
@@ -186,7 +183,6 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             Player {
                 text_box: "".to_string(),
             },
-            Collider,
         ))
         .add(fill_character);
 
@@ -201,7 +197,6 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             backstory: "You are Theo. A stern 16th century Farmer living in a small village in medieval europe. You live with your wife Jessica and son Jeff on your own small patch of land. You know your land is small but it has been owned by centuries by your family. Jeff wants to start working on your neighbor Bill's land because it is much bigger, but you want your family to continue farming your ancestral land. You also know you are getting old and tired and will soon need Jeff's help, especially if you have to support Jessica without help. You speak in short dialog.".to_string(),
             ..Default::default()
         },
-        Collider,
     )).add(fill_character);
 
     commands.spawn((
@@ -215,7 +210,6 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             chat_cooldown: 40.0,
             ..Default::default()
         },
-        Collider,
     )).add(fill_character);
 }
 
@@ -247,19 +241,21 @@ fn fill_character(mut entity: EntityWorldMut<'_>) {
             font_size: 12.0,
             color: Color::BLACK,
         };
-        let text_alignment = TextAlignment::Center;
+        let text_alignment = JustifyText::Center;
         world
             .spawn((Text2dBundle {
-                text: Text::from_section("", text_style.clone()).with_alignment(text_alignment),
+                text: Text::from_section("", text_style.clone())
+                    .with_justify(text_alignment),
                 transform: Transform {
-                    translation: Vec3::new(0.0, 2.0, 0.0),
-                    scale: Vec3::new(0.05, 0.05, 0.0),
+                    translation: Vec3::new(0.0, -200.0, 10.0),
+                    scale: Vec3::new(5.0, 5.0, 0.0),
                     ..default()
                 },
                 text_2d_bounds: Text2dBounds {
                     size: Vec2::new(200.0, 200.0),
                     ..default()
                 },
+                text_anchor: bevy::sprite::Anchor::TopCenter,
                 ..default()
             },))
             .id()
@@ -268,26 +264,26 @@ fn fill_character(mut entity: EntityWorldMut<'_>) {
 }
 
 fn move_player(
-    keyboard_input: Res<Input<KeyCode>>,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
     mut query: Query<&mut Transform, With<Player>>,
     time: Res<Time>,
 ) {
     let mut paddle_transform = query.single_mut();
     let mut direction = Vec2::new(0.0, 0.0);
 
-    if keyboard_input.pressed(KeyCode::Left) {
+    if keyboard_input.pressed(KeyCode::ArrowLeft) {
         direction.x -= 1.0;
     }
 
-    if keyboard_input.pressed(KeyCode::Right) {
+    if keyboard_input.pressed(KeyCode::ArrowRight) {
         direction.x += 1.0;
     }
 
-    if keyboard_input.pressed(KeyCode::Up) {
+    if keyboard_input.pressed(KeyCode::ArrowUp) {
         direction.y += 1.0;
     }
 
-    if keyboard_input.pressed(KeyCode::Down) {
+    if keyboard_input.pressed(KeyCode::ArrowDown) {
         direction.y -= 1.0;
     }
 
@@ -304,14 +300,18 @@ fn move_player(
 }
 
 fn harvest_plant(
-    keyboard_input: Res<Input<KeyCode>>,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
     mut query: Query<(&Transform, &mut Character), (With<Player>, Without<Plant>)>,
     mut plant_query: Query<(&Transform, &mut Plant)>,
 ) {
     if keyboard_input.just_pressed(KeyCode::Space) {
         for (player_transform, mut player) in &mut query {
             for (plant_transform, mut plant) in &mut plant_query {
-                if plant_transform.translation.distance(player_transform.translation) < 50.0 {
+                if plant_transform
+                    .translation
+                    .distance(player_transform.translation)
+                    < 50.0
+                {
                     player.items.push((Item::Plant, 1));
                     plant.growth = 0.0;
                 }
@@ -335,6 +335,7 @@ fn update_speech_box(
         // `children` is a collection of Entity IDs
         for &child in children.iter() {
             if let Some(speech) = character.speech.clone() {
+                println!("{}: {}", character.name, speech);
                 text_query.get_mut(child).unwrap().sections[0].value = speech;
             }
         }
@@ -473,10 +474,7 @@ fn update_npcs(time: Res<Time>, mut npc_query: Query<(&mut NPC, &mut Character)>
     }
 }
 
-fn ui_example_system(
-    mut contexts: EguiContexts,
-    mut players: Query<(&mut Player, &mut Character)>,
-) {
+fn ui_system(mut contexts: EguiContexts, mut players: Query<(&mut Player, &mut Character)>) {
     for (mut player, mut character) in &mut players {
         egui::Window::new("Chat box").show(contexts.ctx_mut(), |ui| {
             ui.add(egui::ProgressBar::new(character.saturation / 100.0).text("Saturation"));
@@ -543,7 +541,7 @@ fn inventory_update(mut query: Query<&mut Character>) {
         for (item, count) in new_items {
             character.items.push((item, count));
         }
-        
+
         if character.saturation < 30.0 {
             let mut new_saturation = character.saturation;
             for (item, count) in character.items.iter_mut() {
@@ -568,7 +566,7 @@ fn inventory_update(mut query: Query<&mut Character>) {
 fn update_saturation(
     mut commands: Commands,
     mut query: Query<(Entity, &mut Character)>,
-    time: Res<Time>
+    time: Res<Time>,
 ) {
     for (entity, mut character) in &mut query.iter_mut() {
         character.saturation -= time.delta_seconds();
