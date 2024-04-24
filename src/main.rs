@@ -32,8 +32,10 @@ fn main() {
                 update_speech_box,
                 apply_velocity,
                 move_player,
+                move_npc,
                 harvest_plant,
                 update_npcs,
+                update_farmers,
                 camera_follow_player,
                 update_plants,
                 inventory_update,
@@ -84,11 +86,18 @@ struct Player {
     text_box: String,
 }
 
+enum NPCState {
+    Idle,
+    Farming
+}
+
 #[derive(Component)]
 struct NPC {
     backstory: String,
     chat_cooldown: f32,
     chat_history: Vec<(String, String)>,
+    state: NPCState,
+    property: Option<Rect>,
 }
 
 impl Default for NPC {
@@ -97,6 +106,8 @@ impl Default for NPC {
             backstory: "".to_string(),
             chat_cooldown: 20.0,
             chat_history: vec![],
+            state: NPCState::Idle,
+            property: None,
         }
     }
 }
@@ -110,6 +121,38 @@ struct Velocity(Vec2);
 #[derive(Component, Deref, DerefMut)]
 struct Plant {
     growth: f32,
+}
+
+impl Default for Plant {
+    fn default() -> Self {
+        Plant { growth: 0.0 }
+    }
+}
+
+impl Plant {
+    fn is_grown(&self) -> bool {
+        self.growth >= 1.0
+    }
+
+    fn get_growth_stage(&self) -> u32 {
+        (self.growth * 3.0).floor() as u32
+    }
+    
+    fn grow(&mut self, amount: f32) {
+        self.growth += amount;
+        if self.growth > 1.0 {
+            self.growth = 1.0;
+        }
+    }
+
+    fn get_harvest_range(&self) -> f32 {
+        match self.get_growth_stage() {
+            0 => 0.0,
+            1 => 10.0,
+            2 => 30.0,
+            _ => 50.0,
+        }
+    }
 }
 
 // Add the game's entities to our world
@@ -133,7 +176,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     for x in 0..=14 {
         for y in 0..=10 {
             commands.spawn((
-                Plant { growth: 0.0 },
+                Plant::default(),
                 SpriteBundle {
                     texture: asset_server.load("textures/plants/stage1.png"),
                     transform: Transform {
@@ -154,7 +197,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     for x in 0..=23 {
         for y in 0..=23 {
             commands.spawn((
-                Plant { growth: 0.0 },
+                Plant::default(),
                 SpriteBundle {
                     texture: asset_server.load("textures/plants/stage1.png"),
                     transform: Transform {
@@ -195,6 +238,8 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         },
         NPC {
             backstory: "You are Theo. A stern 16th century Farmer living in a small village in medieval europe. You live with your wife Jessica and son Jeff on your own small patch of land. You know your land is small but it has been owned by centuries by your family. Jeff wants to start working on your neighbor Bill's land because it is much bigger, but you want your family to continue farming your ancestral land. You also know you are getting old and tired and will soon need Jeff's help, especially if you have to support Jessica without help. You speak in short dialog.".to_string(),
+            state: NPCState::Farming,
+            property: Some(Rect::new(-700.0, 0.0, 14.0*60.0 - 700.0, 10.0*60.0).inset(1.0)),
             ..Default::default()
         },
     )).add(fill_character);
@@ -208,6 +253,8 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         NPC {
             backstory: "You are Jeff. A 16th century Farmer living in a small village in medival europe. You currently live with your parents Theo and Jessica on their small farm. However you know your land is small and will have trouble feeding all three of you so you'd like to move to your neighbor Bill's land in order to stop burdening your family. You've brought this up before, but Theo object due to heritage reasons, whereas you think eating is more important than tradition. You speak in short dialog.".to_string(),
             chat_cooldown: 40.0,
+            state: NPCState::Farming,
+            property: Some(Rect::new(-700.0, 0.0, 14.0*60.0 - 700.0, 10.0*60.0).inset(1.0)),
             ..Default::default()
         },
     )).add(fill_character);
@@ -299,6 +346,40 @@ fn move_player(
     paddle_transform.translation.y = new_paddle_position.y;
 }
 
+fn move_npc(
+    mut query: Query<(&mut Transform, &mut NPC), Without<Plant>>,
+    plants: Query<(&Transform, &Plant)>,
+    time: Res<Time>,
+) {
+    for (mut transform, npc) in &mut query.iter_mut() {
+        match npc.state {
+            NPCState::Idle => {
+            }
+            NPCState::Farming => {
+                let mut closest_plant = None;
+                let mut closest_distance = f32::INFINITY;
+                for (plant_transform, plant) in &plants {
+                    if let Some(property) = npc.property {
+                        if !property.contains(plant_transform.translation.xy()) {
+                            continue;
+                        }
+                    }
+                    let distance = plant_transform.translation.distance(transform.translation);
+                    if distance < closest_distance && plant.is_grown() {
+                        closest_distance = distance;
+                        closest_plant = Some(plant_transform.translation);
+                    }
+                }
+                if let Some(plant_position) = closest_plant {
+                    let direction = plant_position - transform.translation;
+                    let new_position = transform.translation + direction.normalize() * 50.0 * time.delta_seconds();
+                    transform.translation = new_position;
+                }
+            }
+        }
+    }
+}
+
 fn harvest_plant(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut query: Query<(&Transform, &mut Character), (With<Player>, Without<Plant>)>,
@@ -310,7 +391,7 @@ fn harvest_plant(
                 if plant_transform
                     .translation
                     .distance(player_transform.translation)
-                    < 50.0
+                    < plant.get_harvest_range() && plant.is_grown()
                 {
                     player.items.push((Item::Plant, 1));
                     plant.growth = 0.0;
@@ -397,7 +478,7 @@ fn update_npcs(time: Res<Time>, mut npc_query: Query<(&mut NPC, &mut Character)>
         if npc.chat_cooldown > 0.0 {
             npc.chat_cooldown -= time.delta_seconds();
         } else {
-            npc.chat_cooldown = 40.0;
+            npc.chat_cooldown = 400.0;
             let mut messages = vec![OpenAIMessage {
                 role: "system".to_string(),
                 content: npc.backstory.clone(),
@@ -474,6 +555,19 @@ fn update_npcs(time: Res<Time>, mut npc_query: Query<(&mut NPC, &mut Character)>
     }
 }
 
+fn update_farmers(mut query: Query<(&mut NPC, &mut Character, &Transform), Without<Plant>>, mut plant_query: Query<(&Transform, &mut Plant)>) {
+    for (mut npc, mut character, farmer_transform) in &mut query.iter_mut() {
+        if matches!(npc.state, NPCState::Farming) {
+            for (plant_transform, mut plant) in &mut plant_query.iter_mut() {
+                if plant_transform.translation.distance(farmer_transform.translation) < plant.get_harvest_range() && plant.is_grown() {
+                    character.items.push((Item::Plant, 1));
+                    plant.growth = 0.0;
+                }
+            }
+        }
+    }
+}
+
 fn ui_system(mut contexts: EguiContexts, mut players: Query<(&mut Player, &mut Character)>) {
     for (mut player, mut character) in &mut players {
         egui::Window::new("Chat box").show(contexts.ctx_mut(), |ui| {
@@ -515,17 +609,8 @@ fn update_plants(
     asset_server: Res<AssetServer>,
 ) {
     for (mut plant, mut texture) in &mut query {
-        plant.growth += 0.02;
-        if plant.growth > 4.0 {
-            *texture = asset_server.load::<Image>("textures/plants/stage3.png");
-        } else if plant.growth > 2.0 {
-            *texture = asset_server.load::<Image>("textures/plants/stage2.png");
-        } else {
-            *texture = asset_server.load::<Image>("textures/plants/stage1.png");
-        }
-        if plant.growth > 10.0 {
-            plant.growth = 10.0;
-        }
+        plant.grow(0.001);
+        *texture = asset_server.load::<Image>(format!("textures/plants/stage{}.png", plant.get_growth_stage()));
     }
 }
 
