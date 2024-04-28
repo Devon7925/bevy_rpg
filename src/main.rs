@@ -1,13 +1,11 @@
 //! A simplified implementation of the classic game "Breakout".
 
 use std::{
-    collections::HashMap,
-    env,
-    fmt::{self, Formatter},
+    collections::HashMap, env, fmt::{self, Formatter}, thread, time::Duration
 };
 
 use bevy::{
-    a11y::accesskit::TextAlign, prelude::*, text::Text2dBounds
+    a11y::accesskit::TextAlign, prelude::*, tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task}, text::Text2dBounds, time::common_conditions::on_timer, transform::commands, utils::HashSet
 };
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use serde::{Deserialize, Serialize};
@@ -26,22 +24,21 @@ fn main() {
         // Add our gameplay simulation systems to the fixed timestep schedule
         // which runs at 64 Hz by default
         .add_systems(
-            FixedUpdate,
+            Update,
             (
-                update_chat_history,
-                update_speech_box,
-                apply_velocity,
-                move_player,
-                move_npc,
-                harvest_plant,
-                update_npcs,
-                update_farmers,
-                camera_follow_player,
-                update_plants,
-                inventory_update,
-                update_saturation,
+                (
+                    player_input,
+                    update_npcs,
+                    handle_npc_dialog_requests,
+                    update_farmers,
+                    camera_follow_player,
+                    update_plants,
+                    inventory_update,
+                    update_saturation,
+                ),
+                update_history,
+                handle_actions,
             )
-                // `chain`ing systems together runs them in order
                 .chain(),
         )
         .add_systems(Update, (ui_system, bevy::window::close_on_esc))
@@ -53,6 +50,14 @@ enum Item {
     Plant,
     Meat,
 }
+impl Item {
+    fn saturation(&self) -> f32 {
+        match self {
+            Item::Plant => 10.0,
+            Item::Meat => 20.0,
+        }
+    }
+}
 
 impl fmt::Display for Item {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -62,21 +67,39 @@ impl fmt::Display for Item {
         }
     }
 }
+
+#[derive(PartialEq, Eq, Hash, Clone)]
+enum Action {
+    Eat,
+    Harvest,
+    Talk(String),
+}
+
+impl Action {
+    fn get_context(&self, actor: &str) -> String {
+        match self {
+            Action::Eat => format!("{} eats something. ", actor),
+            Action::Harvest => format!("{} harvests. ", actor),
+            Action::Talk(speech) => format!("{} says \"{}\". ", actor, speech),
+        }
+    }
+}
+
 #[derive(Component)]
 struct Character {
     name: String,
-    speech: Option<String>,
     items: Vec<(Item, u32)>,
     saturation: f32,
+    actions: Vec<Action>,
 }
 
 impl Default for Character {
     fn default() -> Self {
         Character {
             name: "".to_string(),
-            speech: None,
             items: vec![],
             saturation: 100.0,
+            actions: vec![],
         }
     }
 }
@@ -88,16 +111,20 @@ struct Player {
 
 enum NPCState {
     Idle,
-    Farming
+    Farming,
 }
 
 #[derive(Component)]
 struct NPC {
     backstory: String,
     chat_cooldown: f32,
-    chat_history: Vec<(String, String)>,
+    history: Vec<(String, Action)>,
     state: NPCState,
     property: Option<Rect>,
+}
+
+impl NPC {
+    const CHAT_COOLDOWN: f32 = 400.0;
 }
 
 impl Default for NPC {
@@ -105,18 +132,18 @@ impl Default for NPC {
         NPC {
             backstory: "".to_string(),
             chat_cooldown: 20.0,
-            chat_history: vec![],
+            history: vec![],
             state: NPCState::Idle,
             property: None,
         }
     }
 }
 
-#[derive(Component, Deref, DerefMut)]
-struct StartPos(Vec2);
+#[derive(Component)]
+struct DialogRequest(Task<Option<String>>);
 
 #[derive(Component, Deref, DerefMut)]
-struct Velocity(Vec2);
+struct StartPos(Vec2);
 
 #[derive(Component, Deref, DerefMut)]
 struct Plant {
@@ -130,6 +157,8 @@ impl Default for Plant {
 }
 
 impl Plant {
+    const HARVEST_RANGE: f32 = 50.0;
+
     fn is_grown(&self) -> bool {
         self.growth >= 1.0
     }
@@ -137,20 +166,11 @@ impl Plant {
     fn get_growth_stage(&self) -> u32 {
         (self.growth * 3.0).floor() as u32
     }
-    
+
     fn grow(&mut self, amount: f32) {
         self.growth += amount;
         if self.growth > 1.0 {
             self.growth = 1.0;
-        }
-    }
-
-    fn get_harvest_range(&self) -> f32 {
-        match self.get_growth_stage() {
-            0 => 0.0,
-            1 => 10.0,
-            2 => 30.0,
-            _ => 50.0,
         }
     }
 }
@@ -291,8 +311,7 @@ fn fill_character(mut entity: EntityWorldMut<'_>) {
         let text_alignment = JustifyText::Center;
         world
             .spawn((Text2dBundle {
-                text: Text::from_section("", text_style.clone())
-                    .with_justify(text_alignment),
+                text: Text::from_section("", text_style.clone()).with_justify(text_alignment),
                 transform: Transform {
                     translation: Vec3::new(0.0, -200.0, 10.0),
                     scale: Vec3::new(5.0, 5.0, 0.0),
@@ -310,12 +329,12 @@ fn fill_character(mut entity: EntityWorldMut<'_>) {
     entity.add_child(text_child_id);
 }
 
-fn move_player(
+fn player_input(
     keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut query: Query<&mut Transform, With<Player>>,
+    mut query: Query<(&mut Transform, &mut Character), With<Player>>,
     time: Res<Time>,
 ) {
-    let mut paddle_transform = query.single_mut();
+    let (mut paddle_transform, mut character) = query.single_mut();
     let mut direction = Vec2::new(0.0, 0.0);
 
     if keyboard_input.pressed(KeyCode::ArrowLeft) {
@@ -344,87 +363,13 @@ fn move_player(
 
     paddle_transform.translation.x = new_paddle_position.x;
     paddle_transform.translation.y = new_paddle_position.y;
-}
 
-fn move_npc(
-    mut query: Query<(&mut Transform, &mut NPC), Without<Plant>>,
-    plants: Query<(&Transform, &Plant)>,
-    time: Res<Time>,
-) {
-    for (mut transform, npc) in &mut query.iter_mut() {
-        match npc.state {
-            NPCState::Idle => {
-            }
-            NPCState::Farming => {
-                let mut closest_plant = None;
-                let mut closest_distance = f32::INFINITY;
-                for (plant_transform, plant) in &plants {
-                    if let Some(property) = npc.property {
-                        if !property.contains(plant_transform.translation.xy()) {
-                            continue;
-                        }
-                    }
-                    let distance = plant_transform.translation.distance(transform.translation);
-                    if distance < closest_distance && plant.is_grown() {
-                        closest_distance = distance;
-                        closest_plant = Some(plant_transform.translation);
-                    }
-                }
-                if let Some(plant_position) = closest_plant {
-                    let direction = plant_position - transform.translation;
-                    let new_position = transform.translation + direction.normalize() * 50.0 * time.delta_seconds();
-                    transform.translation = new_position;
-                }
-            }
-        }
-    }
-}
-
-fn harvest_plant(
-    keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut query: Query<(&Transform, &mut Character), (With<Player>, Without<Plant>)>,
-    mut plant_query: Query<(&Transform, &mut Plant)>,
-) {
     if keyboard_input.just_pressed(KeyCode::Space) {
-        for (player_transform, mut player) in &mut query {
-            for (plant_transform, mut plant) in &mut plant_query {
-                if plant_transform
-                    .translation
-                    .distance(player_transform.translation)
-                    < plant.get_harvest_range() && plant.is_grown()
-                {
-                    player.items.push((Item::Plant, 1));
-                    plant.growth = 0.0;
-                }
-            }
-        }
+        character.actions.push(Action::Harvest);
     }
 }
 
-fn apply_velocity(mut query: Query<(&mut Transform, &Velocity)>, time: Res<Time>) {
-    for (mut transform, velocity) in &mut query {
-        transform.translation.x += velocity.x * time.delta_seconds();
-        transform.translation.y += velocity.y * time.delta_seconds();
-    }
-}
-
-fn update_speech_box(
-    mut character_query: Query<(&mut Character, &Children)>,
-    mut text_query: Query<&mut Text>,
-) {
-    for (mut character, children) in character_query.iter_mut() {
-        // `children` is a collection of Entity IDs
-        for &child in children.iter() {
-            if let Some(speech) = character.speech.clone() {
-                println!("{}: {}", character.name, speech);
-                text_query.get_mut(child).unwrap().sections[0].value = speech;
-            }
-        }
-        character.speech = None;
-    }
-}
-
-fn update_chat_history(
+fn update_history(
     mut npc_query: Query<(&mut NPC, &Transform)>,
     character_query: Query<(&Character, &Transform)>,
 ) {
@@ -435,10 +380,9 @@ fn update_chat_history(
                 .distance(character_transform.translation)
                 < 300.0
             {
-                if let Some(speech) = &character.speech {
-                    npc.chat_history
-                        .push((character.name.clone(), speech.clone()));
-                }
+                character.actions.iter().for_each(|action| {
+                    npc.history.push((character.name.clone(), action.clone()));
+                });
             }
         }
     }
@@ -473,20 +417,49 @@ struct OpenAIResponse {
     choices: Vec<OpenAIChoice>,
 }
 
-fn update_npcs(time: Res<Time>, mut npc_query: Query<(&mut NPC, &mut Character)>) {
-    for (mut npc, mut character) in &mut npc_query {
+fn update_npcs(
+    time: Res<Time>,
+    mut npc_query: Query<(Entity, &mut NPC, &Character, &Transform)>,
+    character_query: Query<(&Character, &Transform)>,
+    mut commands: Commands,
+) {
+    let thread_pool = AsyncComputeTaskPool::get();
+    for (npc_entity_id, mut npc, character, npc_location) in &mut npc_query {
         if npc.chat_cooldown > 0.0 {
             npc.chat_cooldown -= time.delta_seconds();
         } else {
-            npc.chat_cooldown = 400.0;
+            npc.chat_cooldown = NPC::CHAT_COOLDOWN;
+
+            let name = character.name.clone();
+
+            let nearby_people = character_query
+                .iter()
+                .filter(|(_, character_transform)| {
+                    character_transform
+                        .translation
+                        .distance(npc_location.translation)
+                        < 300.0
+                })
+                .map(|(character, _)| character.name.clone())
+                .collect::<Vec<String>>();
+            let nearby_people = if nearby_people.len() > 0 {
+                format!("You see {} near you.", nearby_people.join(", "))
+            } else {
+                "".to_string()
+            };
+
             let mut messages = vec![OpenAIMessage {
                 role: "system".to_string(),
-                content: npc.backstory.clone(),
+                content: format!(
+                    "You speak in the format '{name}: Dialog'. {} {nearby_people}",
+                    npc.backstory
+                ),
                 name: None,
             }];
+
             let mut prev_is_chatter_assistant = false;
             let mut current_content = "".to_string();
-            for (chatter, dialog) in npc.chat_history.iter() {
+            for (chatter, action) in npc.history.iter() {
                 let is_chatter_assistant = chatter == &character.name;
                 if prev_is_chatter_assistant != is_chatter_assistant && current_content.len() > 0 {
                     messages.push(OpenAIMessage {
@@ -502,7 +475,7 @@ fn update_npcs(time: Res<Time>, mut npc_query: Query<(&mut NPC, &mut Character)>
                     current_content = "".to_string();
                 }
                 prev_is_chatter_assistant = is_chatter_assistant;
-                current_content = format!("{}\n{}: {}", current_content, chatter, dialog);
+                current_content = format!("{}{}", current_content, action.get_context(chatter));
             }
             if current_content.len() > 0 {
                 messages.push(OpenAIMessage {
@@ -516,52 +489,96 @@ fn update_npcs(time: Res<Time>, mut npc_query: Query<(&mut NPC, &mut Character)>
                     name: None,
                 });
             }
-            let request_body = OpenAIRequest {
-                model: "gpt-3.5-turbo".to_string(),
-                messages,
-                temperature: 1.0,
-                max_tokens: 64,
-                top_p: 1.0,
-                frequency_penalty: 0.0,
-                presence_penalty: 0.0,
-                stop: "\n".to_string(),
-            };
 
-            println!("Request body: {:?}", request_body);
-            let key = "OPENAI_API_KEY";
-            let token = env::var(key).unwrap();
+            let character_name = character.name.clone();
 
-            let client = reqwest::blocking::Client::new();
-            let response = client
-                .post("https://api.openai.com/v1/chat/completions")
-                .bearer_auth(token)
-                .json(&request_body)
-                .send()
-                .unwrap();
-            let request_text = response.text().unwrap();
-            let res: OpenAIResponse = match serde_json::from_str(&request_text) {
-                Ok(res) => res,
-                Err(e) => {
-                    println!("Could not parse response: {}", request_text);
-                    panic!("Error: {:?}", e);
-                }
-            };
-            let character_response = res.choices[0].message.content.clone();
-            println!("{}'s Response: {}", character.name, character_response);
-            character.speech = character_response
-                .strip_prefix(format!("{}: ", character.name).as_str())
-                .map(|s| s.to_string());
+            let task = thread_pool.spawn(async_compat::Compat::new(async move {
+                let request_body = OpenAIRequest {
+                    model: "gpt-3.5-turbo".to_string(),
+                    messages,
+                    temperature: 1.0,
+                    max_tokens: 64,
+                    top_p: 1.0,
+                    frequency_penalty: 0.0,
+                    presence_penalty: 0.0,
+                    stop: "\"".to_string(),
+                };
+    
+                println!("Request body: {:?}", request_body);
+                let key = "OPENAI_API_KEY";
+                let token = env::var(key).unwrap();
+
+                let client = reqwest::Client::new();
+                let response = client
+                    .post("https://api.openai.com/v1/chat/completions")
+                    .bearer_auth(token)
+                    .json(&request_body)
+                    .send()
+                    .await
+                    .unwrap();
+                let request_text = response.text().await.unwrap();
+                let res: OpenAIResponse = match serde_json::from_str(&request_text) {
+                    Ok(res) => res,
+                    Err(e) => {
+                        println!("Could not parse response: {}", request_text);
+                        panic!("Error: {:?}", e);
+                    }
+                };
+                let character_response = res.choices[0].message.content.clone();
+                character_response
+                    .strip_prefix(format!("{}: ", character_name).as_str())
+                    .map(|s| s.to_string())
+            }));
+            commands.entity(npc_entity_id).insert(DialogRequest(task));
         }
     }
 }
 
-fn update_farmers(mut query: Query<(&mut NPC, &mut Character, &Transform), Without<Plant>>, mut plant_query: Query<(&Transform, &mut Plant)>) {
-    for (mut npc, mut character, farmer_transform) in &mut query.iter_mut() {
+fn handle_npc_dialog_requests(
+    mut npcs: Query<(Entity, &mut Character, &mut DialogRequest)>,
+    mut commands: Commands,
+) {
+    for (entity, mut character, mut task) in &mut npcs {
+        if let Some(mut commands_queue) = future::block_on(future::poll_once(&mut task.0)) {
+            // append the returned command queue to have it execute later
+            if let Some(response) = commands_queue.take() {
+                character.actions.push(Action::Talk(response));
+            }
+            commands.entity(entity).remove::<DialogRequest>();
+        }
+    }
+}
+
+fn update_farmers(
+    mut query: Query<(&NPC, &mut Character, &mut Transform), Without<Plant>>,
+    plants: Query<(&Transform, &Plant)>,
+    time: Res<Time>,
+) {
+    for (npc, mut character, mut npc_transform) in &mut query {
         if matches!(npc.state, NPCState::Farming) {
-            for (plant_transform, mut plant) in &mut plant_query.iter_mut() {
-                if plant_transform.translation.distance(farmer_transform.translation) < plant.get_harvest_range() && plant.is_grown() {
-                    character.items.push((Item::Plant, 1));
-                    plant.growth = 0.0;
+            let mut closest_plant = None;
+            let mut closest_distance = f32::INFINITY;
+            for (plant_transform, plant) in &plants {
+                if let Some(property) = npc.property {
+                    if !property.contains(plant_transform.translation.xy()) {
+                        continue;
+                    }
+                }
+                let distance = plant_transform
+                    .translation
+                    .distance(npc_transform.translation);
+                if distance < closest_distance && plant.is_grown() {
+                    closest_distance = distance;
+                    closest_plant = Some(plant_transform.translation);
+                }
+            }
+            if let Some(plant_position) = closest_plant {
+                let direction = plant_position - npc_transform.translation;
+                let new_position =
+                    npc_transform.translation + direction.normalize() * 50.0 * time.delta_seconds();
+                npc_transform.translation = new_position;
+                if closest_distance < Plant::HARVEST_RANGE {
+                    character.actions.push(Action::Harvest);
                 }
             }
         }
@@ -578,7 +595,9 @@ fn ui_system(mut contexts: EguiContexts, mut players: Query<(&mut Player, &mut C
             }
             ui.text_edit_singleline(&mut player.text_box);
             if ui.button("Submit").clicked() {
-                character.speech = Some(player.text_box.clone());
+                character
+                    .actions
+                    .push(Action::Talk(player.text_box.clone()));
                 player.text_box = "".to_string();
             }
         });
@@ -610,7 +629,10 @@ fn update_plants(
 ) {
     for (mut plant, mut texture) in &mut query {
         plant.grow(0.001);
-        *texture = asset_server.load::<Image>(format!("textures/plants/stage{}.png", plant.get_growth_stage()));
+        *texture = asset_server.load::<Image>(format!(
+            "textures/plants/stage{}.png",
+            plant.get_growth_stage()
+        ));
     }
 }
 
@@ -626,23 +648,6 @@ fn inventory_update(mut query: Query<&mut Character>) {
         for (item, count) in new_items {
             character.items.push((item, count));
         }
-
-        if character.saturation < 30.0 {
-            let mut new_saturation = character.saturation;
-            for (item, count) in character.items.iter_mut() {
-                let provided_saturation = match item {
-                    Item::Plant => 10.0,
-                    Item::Meat => 20.0,
-                };
-                if provided_saturation > 0.0 {
-                    while *count > 0 && new_saturation < 60.0 {
-                        new_saturation += provided_saturation;
-                        *count -= 1;
-                    }
-                }
-            }
-            character.saturation = new_saturation;
-        }
         // remove empty items
         character.items.retain(|(_, count)| *count > 0);
     }
@@ -657,6 +662,56 @@ fn update_saturation(
         character.saturation -= time.delta_seconds();
         if character.saturation < 0.0 {
             commands.entity(entity).despawn();
+        } else if character.saturation < 30.0 {
+            if character
+                .items
+                .iter()
+                .any(|(item, _)| item.saturation() > 0.0)
+            {
+                character.actions.push(Action::Eat);
+            }
         }
+    }
+}
+
+fn handle_actions(
+    mut query: Query<(&Transform, &mut Character, &Children)>,
+    mut plants: Query<(&Transform, &mut Plant)>,
+    mut text_query: Query<&mut Text>,
+) {
+    for (character_transform, mut character, children) in &mut query.iter_mut() {
+        for action in character.actions.clone() {
+            match action {
+                Action::Eat => {
+                    for (item, count) in &mut character.items {
+                        if item.saturation() > 0.0 {
+                            *count -= 1;
+                            character.saturation += item.saturation();
+                            break;
+                        }
+                    }
+                }
+                Action::Harvest => {
+                    for (plant_transform, mut plant) in &mut plants {
+                        if plant_transform
+                            .translation
+                            .distance(character_transform.translation)
+                            < Plant::HARVEST_RANGE
+                        {
+                            if plant.is_grown() {
+                                character.items.push((Item::Plant, 1));
+                                plant.growth = 0.0;
+                            }
+                        }
+                    }
+                }
+                Action::Talk(speech) => {
+                    for &child in children.iter() {
+                        text_query.get_mut(child).unwrap().sections[0].value = speech.clone();
+                    }
+                }
+            }
+        }
+        character.actions.clear();
     }
 }
