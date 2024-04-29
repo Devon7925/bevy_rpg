@@ -1,17 +1,22 @@
 //! A simplified implementation of the classic game "Breakout".
 
 use std::{
-    collections::HashMap, env, fmt::{self, Formatter}, thread, time::Duration
+    collections::HashMap,
+    env,
+    fmt::{self, Formatter},
 };
 
 use bevy::{
-    a11y::accesskit::TextAlign, prelude::*, tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task}, text::Text2dBounds, time::common_conditions::on_timer, transform::commands, utils::HashSet
+    prelude::*,
+    tasks::{futures_lite::future, AsyncComputeTaskPool, Task},
+    text::Text2dBounds,
 };
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 const CHARACTER_SCALE: Vec3 = Vec3::new(0.2, 0.2, 0.0);
-const PADDLE_SPEED: f32 = 500.0;
+const CHARACTER_SPEED: f32 = 250.0;
 
 const BACKGROUND_COLOR: Color = Color::rgb(0.9, 0.9, 0.9);
 
@@ -114,6 +119,15 @@ enum NPCState {
     Farming,
 }
 
+impl NPCState {
+    fn get_context(&self) -> String {
+        match self {
+            NPCState::Idle => "You are currently idle.".to_string(),
+            NPCState::Farming => "You are currently farming.".to_string(),
+        }
+    }
+}
+
 #[derive(Component)]
 struct NPC {
     backstory: String,
@@ -124,7 +138,7 @@ struct NPC {
 }
 
 impl NPC {
-    const CHAT_COOLDOWN: f32 = 400.0;
+    const CHAT_COOLDOWN: f32 = 40.0;
 }
 
 impl Default for NPC {
@@ -140,7 +154,7 @@ impl Default for NPC {
 }
 
 #[derive(Component)]
-struct DialogRequest(Task<Option<String>>);
+struct DialogRequest(Task<Option<OpenAIMessage>>);
 
 #[derive(Component, Deref, DerefMut)]
 struct StartPos(Vec2);
@@ -334,7 +348,9 @@ fn player_input(
     mut query: Query<(&mut Transform, &mut Character), With<Player>>,
     time: Res<Time>,
 ) {
-    let (mut paddle_transform, mut character) = query.single_mut();
+    let Ok((mut transform, mut character)) = query.get_single_mut() else {
+        return;
+    };
     let mut direction = Vec2::new(0.0, 0.0);
 
     if keyboard_input.pressed(KeyCode::ArrowLeft) {
@@ -354,15 +370,13 @@ fn player_input(
     }
 
     // Calculate the new horizontal paddle position based on player input
-    let new_paddle_position = Vec2::new(
-        paddle_transform.translation.x,
-        paddle_transform.translation.y,
-    ) + direction * PADDLE_SPEED * time.delta_seconds();
+    let new_paddle_position = Vec2::new(transform.translation.x, transform.translation.y)
+        + direction * CHARACTER_SPEED * time.delta_seconds();
 
     // Update the paddle position,
 
-    paddle_transform.translation.x = new_paddle_position.x;
-    paddle_transform.translation.y = new_paddle_position.y;
+    transform.translation.x = new_paddle_position.x;
+    transform.translation.y = new_paddle_position.y;
 
     if keyboard_input.just_pressed(KeyCode::Space) {
         character.actions.push(Action::Harvest);
@@ -378,7 +392,7 @@ fn update_history(
             if npc_transform
                 .translation
                 .distance(character_transform.translation)
-                < 300.0
+                < 600.0
             {
                 character.actions.iter().for_each(|action| {
                     npc.history.push((character.name.clone(), action.clone()));
@@ -388,25 +402,58 @@ fn update_history(
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct OpenAIMessage {
     role: String,
-    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<OpenAIToolCall>>,
 }
+
+#[derive(Serialize, Deserialize, Debug)]
+struct OpenAIToolFunction {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct OpenAITool {
+    #[serde(rename = "type")]
+    tool_type: String,
+    function: OpenAIToolFunction,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct OpenAIRequest {
-    model: String,
     messages: Vec<OpenAIMessage>,
+    model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logit_bias: Option<HashMap<u32, f32>>,
     temperature: f32,
     max_tokens: u32,
     top_p: f32,
     frequency_penalty: f32,
     presence_penalty: f32,
-    stop: String,
+    stop: Vec<String>,
+    tools: Vec<OpenAITool>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct OpenAIFunctionCall {
+    name: String,
+    arguments: String,
+}
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct OpenAIToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    tool_type: String,
+    function: OpenAIFunctionCall,
+}
 #[derive(Serialize, Deserialize, Debug)]
 struct OpenAIChoice {
     message: OpenAIMessage,
@@ -415,6 +462,18 @@ struct OpenAIChoice {
 #[derive(Serialize, Deserialize, Debug)]
 struct OpenAIResponse {
     choices: Vec<OpenAIChoice>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct OpenAIError {
+    message: String,
+    #[serde(rename = "type")]
+    error_type: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct OpenAIErrorResponse {
+    error: OpenAIError,
 }
 
 fn update_npcs(
@@ -440,7 +499,8 @@ fn update_npcs(
                         .distance(npc_location.translation)
                         < 300.0
                 })
-                .map(|(character, _)| character.name.clone())
+                .filter(|(nearby_character, _)| nearby_character.name != name)
+                .map(|(nearby_character, _)| nearby_character.name.clone())
                 .collect::<Vec<String>>();
             let nearby_people = if nearby_people.len() > 0 {
                 format!("You see {} near you.", nearby_people.join(", "))
@@ -448,63 +508,64 @@ fn update_npcs(
                 "".to_string()
             };
 
-            let mut messages = vec![OpenAIMessage {
-                role: "system".to_string(),
-                content: format!(
-                    "You speak in the format '{name}: Dialog'. {} {nearby_people}",
-                    npc.backstory
-                ),
-                name: None,
-            }];
+            let mut messages = vec![
+                OpenAIMessage {
+                    role: "system".to_string(),
+                    content: Some(format!(
+                        "You are playing the role of an npc in a video game. You will be given a large amount of context and should either come up with a response from your character in the format '{name}: Dialog', or call a function to change your behavior. ",
+                    )),
+                    tool_calls: None,
+                    name: None,
+                },
+            ];
 
-            let mut prev_is_chatter_assistant = false;
-            let mut current_content = "".to_string();
-            for (chatter, action) in npc.history.iter() {
-                let is_chatter_assistant = chatter == &character.name;
-                if prev_is_chatter_assistant != is_chatter_assistant && current_content.len() > 0 {
-                    messages.push(OpenAIMessage {
-                        role: if prev_is_chatter_assistant {
-                            "assistant"
-                        } else {
-                            "user"
-                        }
-                        .to_string(),
-                        content: current_content.trim().to_string(),
-                        name: None,
-                    });
-                    current_content = "".to_string();
-                }
-                prev_is_chatter_assistant = is_chatter_assistant;
-                current_content = format!("{}{}", current_content, action.get_context(chatter));
-            }
+            let current_task = npc.state.get_context();
+            let current_content = format!(
+                "{}{}{nearby_people}{current_task}",
+                npc.backstory,
+                npc.history
+                    .iter()
+                    .unique()
+                    .map(|(chatter, action)| action.get_context(chatter))
+                    .join("")
+            );
             if current_content.len() > 0 {
                 messages.push(OpenAIMessage {
-                    role: if prev_is_chatter_assistant {
-                        "assistant"
-                    } else {
-                        "user"
-                    }
-                    .to_string(),
-                    content: current_content.trim().to_string(),
+                    role: "user".to_string(),
+                    content: Some(current_content.trim().to_string()),
+                    tool_calls: None,
                     name: None,
                 });
             }
 
-            let character_name = character.name.clone();
-
             let task = thread_pool.spawn(async_compat::Compat::new(async move {
                 let request_body = OpenAIRequest {
-                    model: "gpt-3.5-turbo".to_string(),
                     messages,
+                    model: "gpt-3.5-turbo".to_string(),
+                    logit_bias: Some([(9, -5.0)].iter().cloned().collect()),
                     temperature: 1.0,
                     max_tokens: 64,
                     top_p: 1.0,
                     frequency_penalty: 0.0,
                     presence_penalty: 0.0,
-                    stop: "\"".to_string(),
+                    stop: vec!["\n".to_string()],
+                    tools: vec![OpenAITool {
+                        tool_type: "function".to_string(),
+                        function: OpenAIToolFunction {
+                            name: "set_task".to_string(),
+                            description: "Change what you are currently doing".to_string(),
+                            parameters: serde_json::json!({
+                                "type": "object",
+                                "properties": {
+                                    "task": {"type": "string", "enum": ["idle", "farming"]},
+                                },
+                                "required": ["task"],
+                            }),
+                        },
+                    }],
                 };
-    
-                println!("Request body: {:?}", request_body);
+
+                println!("Request body: {:?}", serde_json::to_string(&request_body));
                 let key = "OPENAI_API_KEY";
                 let token = env::var(key).unwrap();
 
@@ -516,18 +577,21 @@ fn update_npcs(
                     .send()
                     .await
                     .unwrap();
-                let request_text = response.text().await.unwrap();
-                let res: OpenAIResponse = match serde_json::from_str(&request_text) {
+                let response_text = response.text().await.unwrap();
+                let res: OpenAIResponse = match serde_json::from_str(&response_text) {
                     Ok(res) => res,
                     Err(e) => {
-                        println!("Could not parse response: {}", request_text);
-                        panic!("Error: {:?}", e);
+                        if let Ok(_) = serde_json::from_str::<OpenAIErrorResponse>(&response_text) {
+                            println!("Error: {:?}", response_text);
+                            return None;
+                        } else {
+                            println!("Could not parse response: {}", response_text);
+                            panic!("Error: {:?}", e);
+                        }
                     }
                 };
-                let character_response = res.choices[0].message.content.clone();
-                character_response
-                    .strip_prefix(format!("{}: ", character_name).as_str())
-                    .map(|s| s.to_string())
+                println!("Response: {:?}", response_text);
+                Some(res.choices[0].message.clone())
             }));
             commands.entity(npc_entity_id).insert(DialogRequest(task));
         }
@@ -535,14 +599,52 @@ fn update_npcs(
 }
 
 fn handle_npc_dialog_requests(
-    mut npcs: Query<(Entity, &mut Character, &mut DialogRequest)>,
+    mut npcs: Query<(Entity, &mut NPC, &mut Character, &mut DialogRequest)>,
     mut commands: Commands,
 ) {
-    for (entity, mut character, mut task) in &mut npcs {
+    for (entity, mut npc, mut character, mut task) in &mut npcs {
         if let Some(mut commands_queue) = future::block_on(future::poll_once(&mut task.0)) {
             // append the returned command queue to have it execute later
-            if let Some(response) = commands_queue.take() {
-                character.actions.push(Action::Talk(response));
+            if let Some(message) = commands_queue.take() {
+                if let Some(character_response) = message.content.clone() {
+                    if let Some(character_response) = character_response
+                        .strip_prefix(format!("{}: ", character.name).as_str())
+                        .map(|s| s.to_string())
+                    {
+                        println!("Response: {} says {}", character.name, character_response);
+                        character.actions.push(Action::Talk(character_response));
+                    }
+                };
+                if let Some(tool_calls) = message.tool_calls {
+                    for tool_call in tool_calls {
+                        match tool_call.function.name.as_str() {
+                            "set_task" => {
+                                println!("Task arguments: {}", tool_call.function.arguments);
+                                if let Some(task) = serde_json::from_str::<serde_json::Value>(
+                                    tool_call.function.arguments.as_str(),
+                                )
+                                .ok()
+                                .and_then(|v| v["task"].as_str().map(|s| s.to_string()))
+                                {
+                                    npc.state = match task.as_str() {
+                                        "idle" => NPCState::Idle,
+                                        "farming" => NPCState::Farming,
+                                        invalid_state => {
+                                            println!("Invalid state: {}", invalid_state);
+                                            NPCState::Idle
+                                        }
+                                    }
+                                } else {
+                                    println!(
+                                        "Invalid task arguments: {}",
+                                        tool_call.function.arguments.clone()
+                                    );
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
             commands.entity(entity).remove::<DialogRequest>();
         }
@@ -574,8 +676,8 @@ fn update_farmers(
             }
             if let Some(plant_position) = closest_plant {
                 let direction = plant_position - npc_transform.translation;
-                let new_position =
-                    npc_transform.translation + direction.normalize() * 50.0 * time.delta_seconds();
+                let new_position = npc_transform.translation
+                    + direction.normalize() * CHARACTER_SPEED * time.delta_seconds();
                 npc_transform.translation = new_position;
                 if closest_distance < Plant::HARVEST_RANGE {
                     character.actions.push(Action::Harvest);
@@ -608,16 +710,17 @@ fn camera_follow_player(
     player_query: Query<&Transform, With<Player>>,
     mut camera_query: Query<&mut Transform, (With<Camera2d>, Without<Player>)>,
 ) {
+    const CAMERA_MAX_DISTANCE: f32 = 200.0;
     for player_transform in player_query.iter() {
         for mut camera_transform in &mut camera_query.iter_mut() {
             if camera_transform
                 .translation
                 .distance(player_transform.translation)
-                > 100.0
+                > CAMERA_MAX_DISTANCE
             {
                 camera_transform.translation = player_transform.translation
                     + (camera_transform.translation - player_transform.translation).normalize()
-                        * 100.0;
+                        * CAMERA_MAX_DISTANCE;
             }
         }
     }

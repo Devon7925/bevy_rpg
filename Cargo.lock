@@ -916,6 +916,7 @@ dependencies = [
  "async-compat",
  "bevy",
  "bevy_egui",
+ "itertools",
  "reqwest",
  "serde",
  "serde_json",
