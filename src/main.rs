@@ -16,7 +16,7 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 const CHARACTER_SCALE: Vec3 = Vec3::new(0.2, 0.2, 0.0);
-const CHARACTER_SPEED: f32 = 250.0;
+const CHARACTER_SPEED: f32 = 150.0;
 
 const BACKGROUND_COLOR: Color = Color::rgb(0.9, 0.9, 0.9);
 
@@ -36,6 +36,7 @@ fn main() {
                     update_npcs,
                     handle_npc_dialog_requests,
                     update_farmers,
+                    update_travelers,
                     camera_follow_player,
                     update_plants,
                     inventory_update,
@@ -55,6 +56,7 @@ enum Item {
     Plant,
     Meat,
 }
+
 impl Item {
     fn saturation(&self) -> f32 {
         match self {
@@ -117,6 +119,7 @@ struct Player {
 enum NPCState {
     Idle,
     Farming,
+    Traveling(String),
 }
 
 impl NPCState {
@@ -124,6 +127,7 @@ impl NPCState {
         match self {
             NPCState::Idle => "You are currently idle.".to_string(),
             NPCState::Farming => "You are currently farming.".to_string(),
+            NPCState::Traveling(destination) => format!("You are currently traveling to {}. ", destination),
         }
     }
 }
@@ -134,21 +138,19 @@ struct NPC {
     chat_cooldown: f32,
     history: Vec<(String, Action)>,
     state: NPCState,
-    property: Option<Rect>,
 }
 
 impl NPC {
-    const CHAT_COOLDOWN: f32 = 40.0;
+    const CHAT_COOLDOWN: f32 = 80.0;
 }
 
 impl Default for NPC {
     fn default() -> Self {
         NPC {
             backstory: "".to_string(),
-            chat_cooldown: 20.0,
+            chat_cooldown: NPC::CHAT_COOLDOWN / 2.0,
             history: vec![],
             state: NPCState::Idle,
-            property: None,
         }
     }
 }
@@ -189,6 +191,12 @@ impl Plant {
     }
 }
 
+#[derive(Component)]
+struct Region {
+    name: String,
+    range: Rect,
+}
+
 // Add the game's entities to our world
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     // Camera
@@ -199,55 +207,27 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.spawn(SpriteBundle {
         texture: asset_server.load("textures/background.png"),
         transform: Transform {
-            translation: Vec3::new(-1500.0, 1500.0, 0.0),
+            translation: Vec3::new(-1500.0, 1500.0, -1.0),
             scale: Vec3::new(background_scale, background_scale, 0.0),
             ..default()
         },
         ..Default::default()
     });
 
-    // Plants
-    for x in 0..=14 {
-        for y in 0..=10 {
-            commands.spawn((
-                Plant::default(),
-                SpriteBundle {
-                    texture: asset_server.load("textures/plants/stage1.png"),
-                    transform: Transform {
-                        translation: Vec3::new(
-                            -700.0 + 60.0 * (x as f32),
-                            0.0 + 60.0 * (y as f32),
-                            0.0,
-                        ),
-                        scale: Vec3::new(0.3, 0.3, 0.0),
-                        ..default()
-                    },
-                    ..Default::default()
-                },
-            ));
-        }
-    }
+    // Regions & Plants
+    let theo_farm_rect = Rect::new(-700.0, 0.0, 140.0, 600.0);
+    commands.spawn((Region {
+        name: "Theo's Family Farm".to_string(),
+        range: theo_farm_rect,
+    },));
+    fill_rect_with_plants(&mut commands, &asset_server, theo_farm_rect);
 
-    for x in 0..=23 {
-        for y in 0..=23 {
-            commands.spawn((
-                Plant::default(),
-                SpriteBundle {
-                    texture: asset_server.load("textures/plants/stage1.png"),
-                    transform: Transform {
-                        translation: Vec3::new(
-                            -2400.0 + 60.0 * (x as f32),
-                            0.0 + 60.0 * (y as f32),
-                            0.0,
-                        ),
-                        scale: Vec3::new(0.3, 0.3, 0.0),
-                        ..default()
-                    },
-                    ..Default::default()
-                },
-            ));
-        }
-    }
+    let bill_farm_rect = Rect::new(-2400.0, 0.0, -1020.0, 1380.0);
+    commands.spawn((Region {
+        name: "Bill's Farm".to_string(),
+        range: bill_farm_rect,
+    },));
+    fill_rect_with_plants(&mut commands, &asset_server, bill_farm_rect);
 
     // Player
     commands
@@ -271,9 +251,8 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             ..Default::default()
         },
         NPC {
-            backstory: "You are Theo. A stern 16th century Farmer living in a small village in medieval europe. You live with your wife Jessica and son Jeff on your own small patch of land. You know your land is small but it has been owned by centuries by your family. Jeff wants to start working on your neighbor Bill's land because it is much bigger, but you want your family to continue farming your ancestral land. You also know you are getting old and tired and will soon need Jeff's help, especially if you have to support Jessica without help. You speak in short dialog.".to_string(),
+            backstory: "You are Theo. A stern 16th century Farmer living in a small village in medieval europe. You live with your wife Jessica and son Jeff on your own small patch of land. You know your land is small but it has been owned by centuries by your family. Jeff wants to start working on your neighbor Bill's land because it is much bigger, but you want your family to continue farming your ancestral land. You also know you are getting old and tired and will soon need Jeff's help, especially if you have to support Jessica without help. ".to_string(),
             state: NPCState::Farming,
-            property: Some(Rect::new(-700.0, 0.0, 14.0*60.0 - 700.0, 10.0*60.0).inset(1.0)),
             ..Default::default()
         },
     )).add(fill_character);
@@ -285,13 +264,45 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             ..Default::default()
         },
         NPC {
-            backstory: "You are Jeff. A 16th century Farmer living in a small village in medival europe. You currently live with your parents Theo and Jessica on their small farm. However you know your land is small and will have trouble feeding all three of you so you'd like to move to your neighbor Bill's land in order to stop burdening your family. You've brought this up before, but Theo object due to heritage reasons, whereas you think eating is more important than tradition. You speak in short dialog.".to_string(),
-            chat_cooldown: 40.0,
-            state: NPCState::Farming,
-            property: Some(Rect::new(-700.0, 0.0, 14.0*60.0 - 700.0, 10.0*60.0).inset(1.0)),
+            backstory: "You are Jeff. A young 16th century Farmer living in a small village in medival europe. You currently live with your parents Theo and Jessica on their small farm. However you know your land is small and will have trouble feeding all three of you so you'd like to move to your neighbor Bill's land in order to stop burdening your family. You've brought this up before, but Theo objects due to heritage reasons, whereas you think eating is more important than tradition. ".to_string(),
+            chat_cooldown: 10.0,
+            state: NPCState::Idle,
             ..Default::default()
         },
     )).add(fill_character);
+
+    commands.spawn((
+        StartPos(bill_farm_rect.center()),
+        Character {
+            name: "Bill".to_string(),
+            ..Default::default()
+        },
+        NPC {
+            backstory: "You are Bill. A cunning 16th century Farmer living in a small village in medival europe. You live on a farm you've been growing in size for decades. You hope to recruit a village boy Jeff from a nearby farm to help you farm your land, as it currently takes up most of your time. ".to_string(),
+            chat_cooldown: 30.0,
+            state: NPCState::Farming,
+            ..Default::default()
+        },
+    )).add(fill_character);
+}
+
+fn fill_rect_with_plants(commands: &mut Commands, asset_server: &Res<AssetServer>, rect: Rect) {
+    for x in (rect.min.x as i32..=rect.max.x as i32).step_by(60) {
+        for y in (rect.min.y as i32..=rect.max.y as i32).step_by(60) {
+            commands.spawn((
+                Plant::default(),
+                SpriteBundle {
+                    texture: asset_server.load("textures/plants/stage1.png"),
+                    transform: Transform {
+                        translation: Vec3::new(x as f32, y as f32, 0.0),
+                        scale: Vec3::new(0.3, 0.3, 0.0),
+                        ..default()
+                    },
+                    ..Default::default()
+                },
+            ));
+        }
+    }
 }
 
 fn fill_character(mut entity: EntityWorldMut<'_>) {
@@ -480,6 +491,7 @@ fn update_npcs(
     time: Res<Time>,
     mut npc_query: Query<(Entity, &mut NPC, &Character, &Transform)>,
     character_query: Query<(&Character, &Transform)>,
+    region_query: Query<&Region>,
     mut commands: Commands,
 ) {
     let thread_pool = AsyncComputeTaskPool::get();
@@ -491,7 +503,7 @@ fn update_npcs(
 
             let name = character.name.clone();
 
-            let nearby_people = character_query
+            let mut nearby_people = character_query
                 .iter()
                 .filter(|(_, character_transform)| {
                     character_transform
@@ -502,8 +514,41 @@ fn update_npcs(
                 .filter(|(nearby_character, _)| nearby_character.name != name)
                 .map(|(nearby_character, _)| nearby_character.name.clone())
                 .collect::<Vec<String>>();
+
+            // correctly formatted a list of names and store to nearby_people with "and" in between the last two names
             let nearby_people = if nearby_people.len() > 0 {
-                format!("You see {} near you.", nearby_people.join(", "))
+                let last_person = nearby_people.pop().unwrap();
+                if nearby_people.len() > 0 {
+                    format!(
+                        "You see {} and {} near you. ",
+                        nearby_people.join(", "),
+                        last_person
+                    )
+                } else {
+                    format!("You see {} near you. ", last_person)
+                }
+            } else {
+                "".to_string()
+            }; 
+            
+
+            let mut active_regions = region_query
+                .iter()
+                .filter(|region| region.range.contains(npc_location.translation.xy()))
+                .map(|region| region.name.clone())
+                .collect::<Vec<String>>();
+            
+            let active_regions = if active_regions.len() > 0 {
+                let last_region = active_regions.pop().unwrap();
+                if active_regions.len() > 0 {
+                    format!(
+                        "You are currently in {} and {}. ",
+                        active_regions.join(", "),
+                        last_region
+                    )
+                } else {
+                    format!("You are currently in {}. ", last_region)
+                }
             } else {
                 "".to_string()
             };
@@ -512,7 +557,7 @@ fn update_npcs(
                 OpenAIMessage {
                     role: "system".to_string(),
                     content: Some(format!(
-                        "You are playing the role of an npc in a video game. You will be given a large amount of context and should either come up with a response from your character in the format '{name}: Dialog', or call a function to change your behavior. ",
+                        "You are playing the role of an npc in a video game. You will be given a large amount of context and should either come up with a short response from your character in the format '{name}: Dialog', or call a function to change your behavior. ",
                     )),
                     tool_calls: None,
                     name: None,
@@ -521,7 +566,7 @@ fn update_npcs(
 
             let current_task = npc.state.get_context();
             let current_content = format!(
-                "{}{}{nearby_people}{current_task}",
+                "{}{}{active_regions}{nearby_people}{current_task}",
                 npc.backstory,
                 npc.history
                     .iter()
@@ -553,11 +598,12 @@ fn update_npcs(
                         tool_type: "function".to_string(),
                         function: OpenAIToolFunction {
                             name: "set_task".to_string(),
-                            description: "Change what you are currently doing".to_string(),
+                            description: "Change what you are currently doing. destination parameter should be used when task is traveling".to_string(),
                             parameters: serde_json::json!({
                                 "type": "object",
                                 "properties": {
-                                    "task": {"type": "string", "enum": ["idle", "farming"]},
+                                    "task": {"type": "string", "enum": ["idle", "farming", "traveling"]},
+                                    "destination": {"type": "string", "enum": ["Theo's Family Farm", "Bill's Farm"]},
                                 },
                                 "required": ["task"],
                             }),
@@ -620,25 +666,34 @@ fn handle_npc_dialog_requests(
                         match tool_call.function.name.as_str() {
                             "set_task" => {
                                 println!("Task arguments: {}", tool_call.function.arguments);
-                                if let Some(task) = serde_json::from_str::<serde_json::Value>(
+                                if let Some(task_args) = serde_json::from_str::<serde_json::Value>(
                                     tool_call.function.arguments.as_str(),
                                 )
-                                .ok()
-                                .and_then(|v| v["task"].as_str().map(|s| s.to_string()))
-                                {
-                                    npc.state = match task.as_str() {
-                                        "idle" => NPCState::Idle,
-                                        "farming" => NPCState::Farming,
-                                        invalid_state => {
-                                            println!("Invalid state: {}", invalid_state);
-                                            NPCState::Idle
+                                .ok() {
+                                    if let Some(task) = task_args["task"].as_str().map(|s| s.to_string())
+                                    {
+                                        npc.state = match task.as_str() {
+                                            "idle" => NPCState::Idle,
+                                            "farming" => NPCState::Farming,
+                                            "traveling" => if let Some(destination) = task_args["destination"].as_str().map(|s| s.to_string()) {
+                                                NPCState::Traveling(destination)
+                                            } else {
+                                                println!("Invalid destination: {}", tool_call.function.arguments);
+                                                NPCState::Idle
+                                            },
+                                            invalid_state => {
+                                                println!("Invalid state: {}", invalid_state);
+                                                NPCState::Idle
+                                            }
                                         }
+                                    } else {
+                                        println!(
+                                            "Invalid task arguments: {}",
+                                            tool_call.function.arguments.clone()
+                                        );
                                     }
                                 } else {
-                                    println!(
-                                        "Invalid task arguments: {}",
-                                        tool_call.function.arguments.clone()
-                                    );
+                                    println!("Invalid task arguments: {}", tool_call.function.arguments);
                                 }
                             }
                             _ => {}
@@ -654,6 +709,7 @@ fn handle_npc_dialog_requests(
 fn update_farmers(
     mut query: Query<(&NPC, &mut Character, &mut Transform), Without<Plant>>,
     plants: Query<(&Transform, &Plant)>,
+    regions: Query<&Region>,
     time: Res<Time>,
 ) {
     for (npc, mut character, mut npc_transform) in &mut query {
@@ -661,10 +717,16 @@ fn update_farmers(
             let mut closest_plant = None;
             let mut closest_distance = f32::INFINITY;
             for (plant_transform, plant) in &plants {
-                if let Some(property) = npc.property {
-                    if !property.contains(plant_transform.translation.xy()) {
-                        continue;
+                let mut is_in_valid_region = false;
+                for region in &regions {
+                    if region.range.contains(npc_transform.translation.xy())
+                        && region.range.contains(plant_transform.translation.xy())
+                    {
+                        is_in_valid_region = true;
                     }
+                }
+                if !is_in_valid_region {
+                    continue;
                 }
                 let distance = plant_transform
                     .translation
@@ -685,6 +747,30 @@ fn update_farmers(
             }
         }
     }
+}
+
+fn update_travelers(
+    mut query: Query<(&mut NPC, &mut Transform), Without<Plant>>,
+    regions: Query<&Region>,
+    time: Res<Time>,
+) {
+    for (mut npc, mut npc_transform) in &mut query {
+        if let NPCState::Traveling(destination) = &npc.state {
+            let destination_region = regions
+                .iter()
+                .find(|region| region.name == *destination)
+                .unwrap();
+            if !destination_region.range.contains(npc_transform.translation.xy()) {
+                let direction = destination_region.range.center() - npc_transform.translation.xy();
+                let new_position = npc_transform.translation
+                    + direction.normalize().extend(0.0) * CHARACTER_SPEED * time.delta_seconds();
+                npc_transform.translation = new_position;
+            } else {
+                npc.state = NPCState::Idle;
+            }
+        }
+    }
+
 }
 
 fn ui_system(mut contexts: EguiContexts, mut players: Query<(&mut Player, &mut Character)>) {
