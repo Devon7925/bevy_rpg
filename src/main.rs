@@ -1,5 +1,3 @@
-//! A simplified implementation of the classic game "Breakout".
-
 use std::{
     collections::HashMap,
     env,
@@ -7,22 +5,28 @@ use std::{
 };
 
 use bevy::{
+    audio::{AudioPlugin, PlaybackMode, SpatialScale, Volume},
     prelude::*,
     tasks::{futures_lite::future, AsyncComputeTaskPool, Task},
     text::Text2dBounds,
 };
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use itertools::Itertools;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 const CHARACTER_SCALE: Vec3 = Vec3::new(0.2, 0.2, 0.0);
 const CHARACTER_SPEED: f32 = 150.0;
 
 const BACKGROUND_COLOR: Color = Color::rgb(0.9, 0.9, 0.9);
+const AUDIO_SCALE: f32 = 1. / 100.0;
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(AudioPlugin {
+            default_spatial_scale: SpatialScale::new_2d(AUDIO_SCALE),
+            ..default()
+        }))
         .add_plugins(EguiPlugin)
         .insert_resource(ClearColor(BACKGROUND_COLOR))
         .add_systems(Startup, setup)
@@ -127,7 +131,9 @@ impl NPCState {
         match self {
             NPCState::Idle => "You are currently idle.".to_string(),
             NPCState::Farming => "You are currently farming.".to_string(),
-            NPCState::Traveling(destination) => format!("You are currently traveling to {}. ", destination),
+            NPCState::Traveling(destination) => {
+                format!("You are currently traveling to {}. ", destination)
+            }
         }
     }
 }
@@ -174,6 +180,7 @@ impl Default for Plant {
 
 impl Plant {
     const HARVEST_RANGE: f32 = 50.0;
+    const GROWTH_RATE: f32 = 0.0005;
 
     fn is_grown(&self) -> bool {
         self.growth >= 1.0
@@ -200,7 +207,41 @@ struct Region {
 // Add the game's entities to our world
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     // Camera
-    commands.spawn(Camera2dBundle::default());
+    // Space between the two ears
+    let gap = 200.0;
+    let listener = SpatialListener::new(gap);
+    commands
+        .spawn(Camera2dBundle {
+            projection: OrthographicProjection {
+                far: 1000.,
+                near: -1000.,
+                scaling_mode: bevy::render::camera::ScalingMode::WindowSize(1.7),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .insert((SpatialBundle::default(), listener.clone()));
+
+    // Music
+    commands.spawn(AudioBundle {
+        source: asset_server.load("sounds/Ethereal_Quest.mp3"),
+        settings: PlaybackSettings {
+            volume: Volume::new(0.7),
+            mode: PlaybackMode::Loop,
+            ..Default::default()
+        },
+        ..default()
+    });
+
+    commands.spawn(AudioBundle {
+        source: asset_server.load("sounds/evening-birds.mp3"),
+        settings: PlaybackSettings {
+            volume: Volume::new(0.7),
+            mode: PlaybackMode::Loop,
+            ..Default::default()
+        },
+        ..default()
+    });
 
     // Background
     let background_scale = 2.0;
@@ -287,10 +328,13 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
 }
 
 fn fill_rect_with_plants(commands: &mut Commands, asset_server: &Res<AssetServer>, rect: Rect) {
+    let mut rng = rand::thread_rng();
     for x in (rect.min.x as i32..=rect.max.x as i32).step_by(60) {
         for y in (rect.min.y as i32..=rect.max.y as i32).step_by(60) {
             commands.spawn((
-                Plant::default(),
+                Plant {
+                    growth: rng.gen_range(0.0..1.0),
+                },
                 SpriteBundle {
                     texture: asset_server.load("textures/plants/stage1.png"),
                     transform: Transform {
@@ -529,15 +573,14 @@ fn update_npcs(
                 }
             } else {
                 "".to_string()
-            }; 
-            
+            };
 
             let mut active_regions = region_query
                 .iter()
                 .filter(|region| region.range.contains(npc_location.translation.xy()))
                 .map(|region| region.name.clone())
                 .collect::<Vec<String>>();
-            
+
             let active_regions = if active_regions.len() > 0 {
                 let last_region = active_regions.pop().unwrap();
                 if active_regions.len() > 0 {
@@ -549,6 +592,27 @@ fn update_npcs(
                 } else {
                     format!("You are currently in {}. ", last_region)
                 }
+            } else {
+                "".to_string()
+            };
+
+            let saturation_context = if character.saturation < 15.0 {
+                "You are starving. ".to_string()
+            } else if character.saturation < 30.0 {
+                "You are hungry. ".to_string()
+            } else {
+                "".to_string()
+            };
+
+            let inventory_context = if character.items.len() > 0 {
+                format!(
+                    "You have {} in your inventory. ",
+                    character
+                        .items
+                        .iter()
+                        .map(|(item, count)| format!("{} {}s", count, item))
+                        .join(", ")
+                )
             } else {
                 "".to_string()
             };
@@ -566,7 +630,7 @@ fn update_npcs(
 
             let current_task = npc.state.get_context();
             let current_content = format!(
-                "{}{}{active_regions}{nearby_people}{current_task}",
+                "{}{}{active_regions}{nearby_people}{saturation_context}{inventory_context}{current_task}",
                 npc.backstory,
                 npc.history
                     .iter()
@@ -669,18 +733,28 @@ fn handle_npc_dialog_requests(
                                 if let Some(task_args) = serde_json::from_str::<serde_json::Value>(
                                     tool_call.function.arguments.as_str(),
                                 )
-                                .ok() {
-                                    if let Some(task) = task_args["task"].as_str().map(|s| s.to_string())
+                                .ok()
+                                {
+                                    if let Some(task) =
+                                        task_args["task"].as_str().map(|s| s.to_string())
                                     {
                                         npc.state = match task.as_str() {
                                             "idle" => NPCState::Idle,
                                             "farming" => NPCState::Farming,
-                                            "traveling" => if let Some(destination) = task_args["destination"].as_str().map(|s| s.to_string()) {
-                                                NPCState::Traveling(destination)
-                                            } else {
-                                                println!("Invalid destination: {}", tool_call.function.arguments);
-                                                NPCState::Idle
-                                            },
+                                            "traveling" => {
+                                                if let Some(destination) = task_args["destination"]
+                                                    .as_str()
+                                                    .map(|s| s.to_string())
+                                                {
+                                                    NPCState::Traveling(destination)
+                                                } else {
+                                                    println!(
+                                                        "Invalid destination: {}",
+                                                        tool_call.function.arguments
+                                                    );
+                                                    NPCState::Idle
+                                                }
+                                            }
                                             invalid_state => {
                                                 println!("Invalid state: {}", invalid_state);
                                                 NPCState::Idle
@@ -693,7 +767,10 @@ fn handle_npc_dialog_requests(
                                         );
                                     }
                                 } else {
-                                    println!("Invalid task arguments: {}", tool_call.function.arguments);
+                                    println!(
+                                        "Invalid task arguments: {}",
+                                        tool_call.function.arguments
+                                    );
                                 }
                             }
                             _ => {}
@@ -760,7 +837,10 @@ fn update_travelers(
                 .iter()
                 .find(|region| region.name == *destination)
                 .unwrap();
-            if !destination_region.range.contains(npc_transform.translation.xy()) {
+            if !destination_region
+                .range
+                .contains(npc_transform.translation.xy())
+            {
                 let direction = destination_region.range.center() - npc_transform.translation.xy();
                 let new_position = npc_transform.translation
                     + direction.normalize().extend(0.0) * CHARACTER_SPEED * time.delta_seconds();
@@ -770,7 +850,6 @@ fn update_travelers(
             }
         }
     }
-
 }
 
 fn ui_system(mut contexts: EguiContexts, mut players: Query<(&mut Player, &mut Character)>) {
@@ -815,9 +894,10 @@ fn camera_follow_player(
 fn update_plants(
     mut query: Query<(&mut Plant, &mut Handle<Image>)>,
     asset_server: Res<AssetServer>,
+    time: Res<Time>,
 ) {
     for (mut plant, mut texture) in &mut query {
-        plant.grow(0.001);
+        plant.grow(Plant::GROWTH_RATE * time.delta_seconds());
         *texture = asset_server.load::<Image>(format!(
             "textures/plants/stage{}.png",
             plant.get_growth_stage()
@@ -848,7 +928,7 @@ fn update_saturation(
     time: Res<Time>,
 ) {
     for (entity, mut character) in &mut query.iter_mut() {
-        character.saturation -= time.delta_seconds();
+        character.saturation -= 0.2 * time.delta_seconds();
         if character.saturation < 0.0 {
             commands.entity(entity).despawn();
         } else if character.saturation < 30.0 {
@@ -864,11 +944,13 @@ fn update_saturation(
 }
 
 fn handle_actions(
-    mut query: Query<(&Transform, &mut Character, &Children)>,
-    mut plants: Query<(&Transform, &mut Plant)>,
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut query: Query<(Entity, &Transform, &mut Character, &Children)>,
+    mut plants: Query<(Entity, &Transform, &mut Plant)>,
     mut text_query: Query<&mut Text>,
 ) {
-    for (character_transform, mut character, children) in &mut query.iter_mut() {
+    for (character_entity, character_transform, mut character, children) in &mut query.iter_mut() {
         for action in character.actions.clone() {
             match action {
                 Action::Eat => {
@@ -876,12 +958,27 @@ fn handle_actions(
                         if item.saturation() > 0.0 {
                             *count -= 1;
                             character.saturation += item.saturation();
+
+                            // add eat sound
+                            commands
+                                .get_entity(character_entity)
+                                .unwrap()
+                                .insert(AudioBundle {
+                                    source: asset_server.load("sounds/eat.mp3"),
+                                    settings: PlaybackSettings {
+                                        volume: Volume::new(2.0),
+                                        mode: PlaybackMode::Remove,
+                                        spatial: true,
+                                        ..Default::default()
+                                    },
+                                    ..default()
+                                });
                             break;
                         }
                     }
                 }
                 Action::Harvest => {
-                    for (plant_transform, mut plant) in &mut plants {
+                    for (plant_entity, plant_transform, mut plant) in &mut plants {
                         if plant_transform
                             .translation
                             .distance(character_transform.translation)
@@ -890,6 +987,21 @@ fn handle_actions(
                             if plant.is_grown() {
                                 character.items.push((Item::Plant, 1));
                                 plant.growth = 0.0;
+
+                                // add harvest sound
+                                commands
+                                    .get_entity(plant_entity)
+                                    .unwrap()
+                                    .insert(AudioBundle {
+                                        source: asset_server.load("sounds/harvest.mp3"),
+                                        settings: PlaybackSettings {
+                                            volume: Volume::new(2.0),
+                                            mode: PlaybackMode::Remove,
+                                            spatial: true,
+                                            ..Default::default()
+                                        },
+                                        ..default()
+                                    });
                             }
                         }
                     }
@@ -898,6 +1010,24 @@ fn handle_actions(
                     for &child in children.iter() {
                         text_query.get_mut(child).unwrap().sections[0].value = speech.clone();
                     }
+
+                    // add talk sound
+                    commands
+                        .get_entity(character_entity)
+                        .unwrap()
+                        .insert(AudioBundle {
+                            source: asset_server.load(format!(
+                                "sounds/voice{}.mp3",
+                                rand::thread_rng().gen_range(1..=6)
+                            )),
+                            settings: PlaybackSettings {
+                                volume: Volume::new(2.0),
+                                mode: PlaybackMode::Remove,
+                                spatial: true,
+                                ..Default::default()
+                            },
+                            ..default()
+                        });
                 }
             }
         }
