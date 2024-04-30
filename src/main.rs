@@ -147,7 +147,7 @@ struct NPC {
 }
 
 impl NPC {
-    const CHAT_COOLDOWN: f32 = 80.0;
+    const CHAT_COOLDOWN: f32 = 100.0;
 }
 
 impl Default for NPC {
@@ -246,7 +246,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     // Background
     let background_scale = 2.0;
     commands.spawn(SpriteBundle {
-        texture: asset_server.load("textures/background.png"),
+        texture: asset_server.load("textures/background_v2.png"),
         transform: Transform {
             translation: Vec3::new(-1500.0, 1500.0, -1.0),
             scale: Vec3::new(background_scale, background_scale, 0.0),
@@ -256,19 +256,33 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     });
 
     // Regions & Plants
-    let theo_farm_rect = Rect::new(-700.0, 0.0, 140.0, 600.0);
+    let theo_farm_rect = Rect::new(-760.0, 0.0, 320.0, 720.0);
     commands.spawn((Region {
         name: "Theo's Family Farm".to_string(),
         range: theo_farm_rect,
     },));
     fill_rect_with_plants(&mut commands, &asset_server, theo_farm_rect);
 
-    let bill_farm_rect = Rect::new(-2400.0, 0.0, -1020.0, 1380.0);
+    let bill_farm_rect = Rect::new(-2520.0, 0.0, -1020.0, 1740.0);
     commands.spawn((Region {
         name: "Bill's Farm".to_string(),
         range: bill_farm_rect,
     },));
     fill_rect_with_plants(&mut commands, &asset_server, bill_farm_rect);
+
+    let steve_farm_rect = Rect::new(-800.0, 1840.0, 300.0, 2600.0);
+    commands.spawn((Region {
+        name: "Steve's Farm".to_string(),
+        range: steve_farm_rect,
+    },));
+    fill_rect_with_plants(&mut commands, &asset_server, steve_farm_rect);
+
+    let jacob_farm_rect = Rect::new(-3260.0, 2020.0, -2240.0, 2530.0);
+    commands.spawn((Region {
+        name: "Jacob's Farm".to_string(),
+        range: jacob_farm_rect,
+    },));
+    fill_rect_with_plants(&mut commands, &asset_server, jacob_farm_rect);
 
     // Player
     commands
@@ -292,7 +306,8 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             ..Default::default()
         },
         NPC {
-            backstory: "You are Theo. A stern 16th century Farmer living in a small village in medieval europe. You live with your wife Jessica and son Jeff on your own small patch of land. You know your land is small but it has been owned by centuries by your family. Jeff wants to start working on your neighbor Bill's land because it is much bigger, but you want your family to continue farming your ancestral land. You also know you are getting old and tired and will soon need Jeff's help, especially if you have to support Jessica without help. ".to_string(),
+            backstory: "You are Theo. A stern 16th century Farmer living in a small village in medieval europe. You live with your wife Jessica and son Jeff on your own small patch of land. You know your land is small but it has been owned by centuries by your family. Jeff wants to start working on your neighbor Bill's land because it is much bigger, but you want your family to continue farming your historical land. You also know you are getting old and tired and will soon need Jeff's help, especially if you have to support Jessica without help. ".to_string(),
+            chat_cooldown: 10.0,
             state: NPCState::Farming,
             ..Default::default()
         },
@@ -306,7 +321,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         },
         NPC {
             backstory: "You are Jeff. A young 16th century Farmer living in a small village in medival europe. You currently live with your parents Theo and Jessica on their small farm. However you know your land is small and will have trouble feeding all three of you so you'd like to move to your neighbor Bill's land in order to stop burdening your family. You've brought this up before, but Theo objects due to heritage reasons, whereas you think eating is more important than tradition. ".to_string(),
-            chat_cooldown: 10.0,
+            chat_cooldown: 3.0,
             state: NPCState::Idle,
             ..Default::default()
         },
@@ -320,7 +335,35 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         },
         NPC {
             backstory: "You are Bill. A cunning 16th century Farmer living in a small village in medival europe. You live on a farm you've been growing in size for decades. You hope to recruit a village boy Jeff from a nearby farm to help you farm your land, as it currently takes up most of your time. ".to_string(),
-            chat_cooldown: 30.0,
+            chat_cooldown: 25.0,
+            state: NPCState::Farming,
+            ..Default::default()
+        },
+    )).add(fill_character);
+
+    commands.spawn((
+        StartPos(jacob_farm_rect.center()),
+        Character {
+            name: "Jacob".to_string(),
+            ..Default::default()
+        },
+        NPC {
+            backstory: "You are Jacob. A reclusive 16th century Farmer living in a small village in medival europe. You live on a small farm by yourself, and try to stay out of everyone's buissiness in the hopes they'll stay out of yours. ".to_string(),
+            chat_cooldown: 42.0,
+            state: NPCState::Farming,
+            ..Default::default()
+        },
+    )).add(fill_character);
+
+    commands.spawn((
+        StartPos(steve_farm_rect.center()),
+        Character {
+            name: "Steve".to_string(),
+            ..Default::default()
+        },
+        NPC {
+            backstory: "You are Steve. An outgoing 16th century Farmer living in a small village in medival europe. You live on a small farm by yourself, but try to bring the community of the village together by trying to organize events and going over to people's houses. You are worried about Jacob as he doesn't socialize much, which can't be good for him. ".to_string(),
+            chat_cooldown: 60.0,
             state: NPCState::Farming,
             ..Default::default()
         },
@@ -572,7 +615,7 @@ fn update_npcs(
                     format!("You see {} near you. ", last_person)
                 }
             } else {
-                "".to_string()
+                "You are alone. ".to_string()
             };
 
             let mut active_regions = region_query
@@ -667,7 +710,7 @@ fn update_npcs(
                                 "type": "object",
                                 "properties": {
                                     "task": {"type": "string", "enum": ["idle", "farming", "traveling"]},
-                                    "destination": {"type": "string", "enum": ["Theo's Family Farm", "Bill's Farm"]},
+                                    "destination": {"type": "string", "enum": ["Theo's Family Farm", "Bill's Farm", "Steve's Farm", "Jacob's Farm"]},
                                 },
                                 "required": ["task"],
                             }),
